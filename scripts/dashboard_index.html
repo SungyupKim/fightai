@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>fightai dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e8ec;
+    --muted: #8b93a3; --accent: #4f8cff; --good: #3ecf8e; --bad: #ff5f6d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 20px; color: var(--muted); }
+  h1 span { color: var(--text); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 980px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px;
+  }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 14px; }
+  .status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  .dot.on { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .dot.off { background: var(--bad); }
+  .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 14px 0; }
+  .metric { background: #0f1115; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .metric .label { font-size: 11px; color: var(--muted); }
+  .metric .value { font-size: 18px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; }
+  input, select {
+    width: 100%; padding: 8px 10px; background: #0f1115; border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text); font-size: 13px;
+  }
+  button {
+    margin-top: 14px; padding: 9px 14px; border-radius: 6px; border: none;
+    background: var(--accent); color: white; font-size: 13px; cursor: pointer; font-weight: 500;
+  }
+  button.danger { background: var(--bad); }
+  button.secondary { background: #2a2f3a; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button + button { margin-left: 8px; }
+  .log { font-size: 11px; color: var(--muted); margin-top: 10px; word-break: break-all; }
+  .full { grid-column: 1 / -1; }
+</style>
+</head>
+<body>
+  <h1>fightai <span>학습 대시보드</span></h1>
+  <div class="grid">
+    <div class="panel">
+      <h2>학습 상태</h2>
+      <div class="status-row"><div id="train-dot" class="dot"></div><strong id="train-state">확인 중...</strong></div>
+      <div class="metrics">
+        <div class="metric"><div class="label">total_timesteps</div><div class="value" id="m-steps">-</div></div>
+        <div class="metric"><div class="label">ep_rew_mean</div><div class="value" id="m-rew">-</div></div>
+        <div class="metric"><div class="label">ep_len_mean</div><div class="value" id="m-len">-</div></div>
+        <div class="metric"><div class="label">fps</div><div class="value" id="m-fps">-</div></div>
+      </div>
+      <div class="log" id="log-file"></div>
+
+      <label>timesteps</label>
+      <input id="in-timesteps" type="number" value="2000000" step="100000">
+
+      <label>resume from (선택)</label>
+      <select id="in-resume"><option value="">-- 처음부터 새로 --</option></select>
+
+      <label>output 이름</label>
+      <input id="in-out" type="text" placeholder="예: ppo_dash_run">
+
+      <div>
+        <button id="btn-train-start">학습 시작</button>
+        <button id="btn-train-stop" class="danger">중지</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>뷰어 (격투 확인)</h2>
+      <div class="status-row"><div id="watch-dot" class="dot"></div><strong id="watch-state">확인 중...</strong></div>
+
+      <label>체크포인트 선택</label>
+      <select id="in-watch-checkpoint"></select>
+
+      <div>
+        <button id="btn-watch-start">뷰어 열기</button>
+        <button id="btn-watch-stop" class="danger">뷰어 닫기</button>
+        <button id="btn-refresh-ckpt" class="secondary">목록 새로고침</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  return res.json();
+}
+
+function fmt(n) {
+  if (n === undefined || n === null) return '-';
+  if (Math.abs(n) >= 1000) return Math.round(n).toLocaleString();
+  return (Math.round(n * 100) / 100).toString();
+}
+
+async function refreshStatus() {
+  const s = await api('/api/status');
+  $('train-dot').className = 'dot ' + (s.training ? 'on' : 'off');
+  $('train-state').textContent = s.training ? '학습 중' : '중지됨';
+  $('watch-dot').className = 'dot ' + (s.watching ? 'on' : 'off');
+  $('watch-state').textContent = s.watching ? '실행 중' : '중지됨';
+  $('m-steps').textContent = fmt(s.metrics.total_timesteps);
+  $('m-rew').textContent = fmt(s.metrics.ep_rew_mean);
+  $('m-len').textContent = fmt(s.metrics.ep_len_mean);
+  $('m-fps').textContent = fmt(s.metrics.fps);
+  $('log-file').textContent = s.log_file ? ('log: ' + s.log_file) : '';
+  $('btn-train-start').disabled = s.training;
+  $('btn-train-stop').disabled = !s.training;
+}
+
+async function refreshCheckpoints() {
+  const { checkpoints } = await api('/api/checkpoints');
+  const resumeSel = $('in-resume');
+  const watchSel = $('in-watch-checkpoint');
+  const prevResume = resumeSel.value;
+  const prevWatch = watchSel.value;
+  resumeSel.innerHTML = '<option value="">-- 처음부터 새로 --</option>';
+  watchSel.innerHTML = '';
+  for (const c of checkpoints) {
+    const o1 = document.createElement('option');
+    o1.value = c.path; o1.textContent = c.label;
+    resumeSel.appendChild(o1);
+    const o2 = document.createElement('option');
+    o2.value = c.path; o2.textContent = c.label;
+    watchSel.appendChild(o2);
+  }
+  if ([...resumeSel.options].some(o => o.value === prevResume)) resumeSel.value = prevResume;
+  if ([...watchSel.options].some(o => o.value === prevWatch)) watchSel.value = prevWatch;
+}
+
+$('btn-train-start').addEventListener('click', async () => {
+  const body = {
+    timesteps: parseInt($('in-timesteps').value, 10),
+    resume_from: $('in-resume').value || null,
+    out: $('in-out').value || undefined,
+  };
+  const r = await api('/api/train/start', { method: 'POST', body: JSON.stringify(body) });
+  if (r.error) alert(r.error);
+  refreshStatus();
+});
+
+$('btn-train-stop').addEventListener('click', async () => {
+  if (!confirm('학습을 중지할까요? (마지막 autosave 체크포인트부터 이어할 수 있습니다)')) return;
+  await api('/api/train/stop', { method: 'POST' });
+  refreshStatus();
+});
+
+$('btn-watch-start').addEventListener('click', async () => {
+  const checkpoint = $('in-watch-checkpoint').value;
+  if (!checkpoint) return alert('체크포인트를 선택하세요');
+  const r = await api('/api/watch/start', { method: 'POST', body: JSON.stringify({ checkpoint }) });
+  if (r.error) alert(r.error);
+  refreshStatus();
+});
+
+$('btn-watch-stop').addEventListener('click', async () => {
+  await api('/api/watch/stop', { method: 'POST' });
+  refreshStatus();
+});
+
+$('btn-refresh-ckpt').addEventListener('click', refreshCheckpoints);
+
+refreshStatus();
+refreshCheckpoints();
+setInterval(refreshStatus, 2000);
+setInterval(refreshCheckpoints, 10000);
+</script>
+</body>
+</html>
