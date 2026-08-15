@@ -1,6 +1,8 @@
-"""Gymnasium environment: fighter 'a' (learned policy) vs fighter 'b' (scripted
-shadow-boxing opponent from view.py). Reward is driven by contact forces between
-'weapon' geoms (fists/feet) and 'target' geoms (torso/head), plus a fall penalty.
+"""Gymnasium environment: fighter 'a' (learned policy) vs fighter 'b'. 'b' is either
+the scripted shadow-boxing opponent from view.py, or -- if opponent_policy_path is
+given -- a frozen snapshot of a trained policy controlling 'b' from its own mirrored
+point of view (self-play). Reward is driven by contact forces between 'weapon' geoms
+(fists/feet) and 'target' geoms (torso/head), plus a fall penalty.
 """
 import pathlib
 
@@ -48,11 +50,12 @@ STAGGER_NOISE_STD = 0.4        # extra action noise, scaled by stagger
 class Fighter2DEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, render_mode=None):
+    def __init__(self, render_mode=None, opponent_policy_path=None):
         super().__init__()
         self.model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
         self.data = mujoco.MjData(self.model)
         self.render_mode = render_mode
+        self.opponent_policy = None
         self._viewer = None
 
         self.a_act = np.array([self.model.actuator(f"a_{j}").id for j in JOINTS])
@@ -100,6 +103,42 @@ class Fighter2DEnv(gym.Env):
         self.down_steps = {"a": 0, "b": 0}
         self._prev_contact_pairs = {"a_punch": set(), "a_kick": set(), "b_punch": set(), "b_kick": set()}
         self._t = 0.0
+
+        if opponent_policy_path:
+            self.set_opponent(opponent_policy_path)
+
+    def set_opponent(self, path):
+        """Load (or reload) the frozen policy that controls 'b', for self-play.
+        Pass None/empty to fall back to the scripted shadow-boxing opponent."""
+        if not path:
+            self.opponent_policy = None
+            return
+        from stable_baselines3 import PPO
+        self.opponent_policy = PPO.load(path, device="cpu")
+
+    def _obs_for_b(self):
+        """Same shape/ordering convention as _obs(), but from 'b's point of view:
+        'b' is self, 'a' is the opponent. 'b' starts on the opposite side from 'a',
+        so root_x position/velocity (index 0 of each qpos/qvel block) are mirrored
+        (negated) -- otherwise a policy trained as 'a' (positive thrust = approach)
+        would see the same relative-distance sign but push the wrong physical
+        direction when applied to 'b's real, un-mirrored actuator."""
+        ax, az = self.data.xpos[self.a_torso_id][[0, 2]]
+        bx, bz = self.data.xpos[self.b_torso_id][[0, 2]]
+        extra = np.array([
+            -(ax - bx), az - bz,
+            self.health["b"] / 100.0, self.health["a"] / 100.0,
+            self.stagger["b"], self.stagger["a"],
+        ])
+        b_qpos = self.data.qpos[self.b_qpos_idx].copy()
+        b_qvel = self.data.qvel[self.b_qvel_idx].copy()
+        a_qpos = self.data.qpos[self.a_qpos_idx].copy()
+        a_qvel = self.data.qvel[self.a_qvel_idx].copy()
+        b_qpos[0] *= -1
+        b_qvel[0] *= -1
+        a_qpos[0] *= -1
+        a_qvel[0] *= -1
+        return np.concatenate([b_qpos, b_qvel, a_qpos, a_qvel, extra]).astype(np.float32)
 
     def _contact_damage_by_part(self, weapons, targets_by_part, prev_pairs):
         """Returns ({part_name: damage}, current_pairs). Damage only counts for
@@ -157,7 +196,15 @@ class Fighter2DEnv(gym.Env):
     def step(self, action):
         action = np.clip(action, -1.0, 1.0)
         a_root_action, a_joint_action = action[0], action[1:]
-        b_ctrl = get_ctrl(self._t, phase=np.pi)
+
+        if self.opponent_policy is not None:
+            b_full_action, _ = self.opponent_policy.predict(self._obs_for_b(), deterministic=False)
+            b_full_action = np.clip(b_full_action, -1.0, 1.0)
+            # root thrust comes back in the mirrored frame -- negate to get 'b's real ctrl direction
+            b_root_action_fixed, b_ctrl = -b_full_action[0], b_full_action[1:]
+        else:
+            b_root_action_fixed = None
+            b_ctrl = get_ctrl(self._t, phase=np.pi)
 
         for _ in range(FRAME_SKIP):
             a_authority = 1.0 - STAGGER_CONTROL_LOSS * self.stagger["a"]
@@ -170,7 +217,10 @@ class Fighter2DEnv(gym.Env):
             ax = self.data.xpos[self.a_torso_id][0]
             bx = self.data.xpos[self.b_torso_id][0]
             self.data.ctrl[self.a_root_act] = np.clip(a_root_action * a_authority, -1.0, 1.0)
-            b_root_action = np.clip((ax - bx) * B_APPROACH_GAIN, -1.0, 1.0)
+            if b_root_action_fixed is not None:
+                b_root_action = b_root_action_fixed
+            else:
+                b_root_action = np.clip((ax - bx) * B_APPROACH_GAIN, -1.0, 1.0)
             self.data.ctrl[self.b_root_act] = np.clip(b_root_action * b_authority, -1.0, 1.0)
 
             mujoco.mj_step(self.model, self.data)
