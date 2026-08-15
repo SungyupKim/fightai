@@ -31,6 +31,8 @@ B_APPROACH_GAIN = 1.5          # scripted opponent's proportional gain for walki
 # per-bodypart health multipliers: head strikes hurt more, leg strikes least
 TARGET_HEALTH_MULT = {"head": 1.6, "torso": 1.0, "leg": 0.5}
 HEAD_REWARD_BONUS = 1.5        # extra reward multiplier for landing headshots, on top of health mult
+KICK_REWARD_BONUS = 2.0        # extra reward multiplier for shin-landed damage, to outweigh the balance
+                                # risk of committing a leg instead of just punching (reward only, not health)
 DAMAGE_REWARD_SCALE = 0.35     # downweight raw contact-force reward so KO/knockdown outcomes dominate
                                 # over just landing one hard hit (doesn't affect actual health loss)
 
@@ -71,8 +73,10 @@ class Fighter2DEnv(gym.Env):
         self.a_torso_id = self.model.body("a_torso").id
         self.b_torso_id = self.model.body("b_torso").id
 
-        self.a_weapons = {self.model.geom(f"a_{g}").id for g in ("forearm_r", "forearm_l", "shin_r", "shin_l")}
-        self.b_weapons = {self.model.geom(f"b_{g}").id for g in ("forearm_r", "forearm_l", "shin_r", "shin_l")}
+        self.a_punch_weapons = {self.model.geom(f"a_{g}").id for g in ("forearm_r", "forearm_l")}
+        self.a_kick_weapons = {self.model.geom(f"a_{g}").id for g in ("shin_r", "shin_l")}
+        self.b_punch_weapons = {self.model.geom(f"b_{g}").id for g in ("forearm_r", "forearm_l")}
+        self.b_kick_weapons = {self.model.geom(f"b_{g}").id for g in ("shin_r", "shin_l")}
 
         def targets_by_part(prefix):
             return {
@@ -94,21 +98,33 @@ class Fighter2DEnv(gym.Env):
         self.health = {"a": 100.0, "b": 100.0}
         self.stagger = {"a": 0.0, "b": 0.0}
         self.down_steps = {"a": 0, "b": 0}
+        self._prev_contact_pairs = {"a_punch": set(), "a_kick": set(), "b_punch": set(), "b_kick": set()}
         self._t = 0.0
 
-    def _contact_damage_by_part(self, weapons, targets_by_part):
-        """Returns {part_name: damage} for contacts between weapons and each target part."""
+    def _contact_damage_by_part(self, weapons, targets_by_part, prev_pairs):
+        """Returns ({part_name: damage}, current_pairs). Damage only counts for
+        weapon-target geom pairs making *new* contact this step (a persisting press,
+        e.g. resting on a downed opponent, deals no extra damage) -- one touch, one hit."""
         damage = {part: 0.0 for part in targets_by_part}
+        current_pairs = set()
         for i in range(self.data.ncon):
             c = self.data.contact[i]
             for part, geoms in targets_by_part.items():
-                if (c.geom1 in weapons and c.geom2 in geoms) or (c.geom2 in weapons and c.geom1 in geoms):
+                pair = None
+                if c.geom1 in weapons and c.geom2 in geoms:
+                    pair = (c.geom1, c.geom2)
+                elif c.geom2 in weapons and c.geom1 in geoms:
+                    pair = (c.geom2, c.geom1)
+                if pair is None:
+                    continue
+                current_pairs.add(pair)
+                if pair not in prev_pairs:
                     force6 = np.zeros(6)
                     mujoco.mj_contactForce(self.model, self.data, i, force6)
                     damage[part] += abs(force6[0])
         for part in damage:
             damage[part] = min(damage[part] * FORCE_TO_DAMAGE, MAX_STEP_DAMAGE)
-        return damage
+        return damage, current_pairs
 
     def _obs(self):
         ax, az = self.data.xpos[self.a_torso_id][[0, 2]]
@@ -134,6 +150,7 @@ class Fighter2DEnv(gym.Env):
         self.health = {"a": 100.0, "b": 100.0}
         self.stagger = {"a": 0.0, "b": 0.0}
         self.down_steps = {"a": 0, "b": 0}
+        self._prev_contact_pairs = {"a_punch": set(), "a_kick": set(), "b_punch": set(), "b_kick": set()}
         self._t = 0.0
         return self._obs(), {}
 
@@ -159,8 +176,14 @@ class Fighter2DEnv(gym.Env):
             mujoco.mj_step(self.model, self.data)
             self._t += self.model.opt.timestep
 
-        dmg_to_b = self._contact_damage_by_part(self.a_weapons, self.b_targets)
-        dmg_to_a = self._contact_damage_by_part(self.b_weapons, self.a_targets)
+        pp = self._prev_contact_pairs
+        dmg_to_b_punch, pp["a_punch"] = self._contact_damage_by_part(self.a_punch_weapons, self.b_targets, pp["a_punch"])
+        dmg_to_b_kick, pp["a_kick"] = self._contact_damage_by_part(self.a_kick_weapons, self.b_targets, pp["a_kick"])
+        dmg_to_a_punch, pp["b_punch"] = self._contact_damage_by_part(self.b_punch_weapons, self.a_targets, pp["b_punch"])
+        dmg_to_a_kick, pp["b_kick"] = self._contact_damage_by_part(self.b_kick_weapons, self.a_targets, pp["b_kick"])
+
+        dmg_to_b = {p: dmg_to_b_punch[p] + dmg_to_b_kick[p] for p in dmg_to_b_punch}
+        dmg_to_a = {p: dmg_to_a_punch[p] + dmg_to_a_kick[p] for p in dmg_to_a_punch}
 
         def health_damage(parts):
             return sum(parts[p] * TARGET_HEALTH_MULT[p] for p in parts)
@@ -194,8 +217,12 @@ class Fighter2DEnv(gym.Env):
         down_penalty = DOWN_PENALTY_PER_STEP * (int(a_down_now) - int(b_down_now))
         knockdown_entry = KNOCKDOWN_ENTRY_PENALTY * (int(self.down_steps["a"] == 1) - int(self.down_steps["b"] == 1))
 
-        reward = (reward_damage(dmg_to_b) - reward_damage(dmg_to_a)) * DAMAGE_REWARD_SCALE \
-            - EFFORT_COST * np.sum(action ** 2) + ALIVE_BONUS - engage_penalty - down_penalty - knockdown_entry
+        strike_reward = (reward_damage(dmg_to_b_punch) + reward_damage(dmg_to_b_kick) * KICK_REWARD_BONUS) \
+            - (reward_damage(dmg_to_a_punch) + reward_damage(dmg_to_a_kick) * KICK_REWARD_BONUS)
+
+        reward = strike_reward * DAMAGE_REWARD_SCALE \
+            - EFFORT_COST * np.sum(action ** 2) + ALIVE_BONUS - engage_penalty - down_penalty \
+            - knockdown_entry
 
         terminated = False
         if a_out and b_out:
