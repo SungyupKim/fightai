@@ -1,6 +1,7 @@
 """Trains fighter 'a' with PPO against the scripted shadow-boxing opponent 'b'."""
 import argparse
 import pathlib
+import time
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
@@ -27,6 +28,8 @@ def main():
     MODELS_DIR.mkdir(exist_ok=True)
     ckpt_dir = MODELS_DIR / "autosave"
     ckpt_dir.mkdir(exist_ok=True)
+    run_id = time.strftime("%Y%m%d_%H%M%S")
+    run_name = f"{args.out}_{run_id}"
 
     vec_env = make_vec_env(Fighter2DEnv, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv)
 
@@ -47,7 +50,7 @@ def main():
     checkpoint_callback = CheckpointCallback(
         save_freq=max(args.save_freq // args.n_envs, 1),
         save_path=str(ckpt_dir),
-        name_prefix=args.out,
+        name_prefix=run_name,
     )
 
     try:
@@ -57,7 +60,7 @@ def main():
             reset_num_timesteps=args.resume_from is None,
         )
     finally:
-        out_path = MODELS_DIR / args.out
+        out_path = MODELS_DIR / run_name
         model.save(str(out_path))
         print(f"saved model to {out_path}.zip")
 
