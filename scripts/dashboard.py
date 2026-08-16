@@ -18,9 +18,12 @@ VENV_PY = ROOT / ".venv" / "bin" / "python"
 
 CKPT.mkdir(exist_ok=True)
 
-TRAIN_PATTERN = "train.py --timesteps"
-WATCH_PATTERN = "watch.py"
-ROLLOUT_KEYS = ["total_timesteps", "ep_rew_mean", "ep_len_mean", "fps"]
+TRAIN_PATTERN = r"train(_selfplay)?\.py --timesteps"
+WATCH_PATTERN = r"watch\.py"
+BREAKDOWN_KEYS = ["r_strike", "r_effort", "r_jerk", "r_engage", "r_down", "r_knockdown_entry", "r_terminal"]
+ROLLOUT_KEYS = ["total_timesteps", "ep_rew_mean", "b_ep_rew_mean", "ep_len_mean", "fps"] + BREAKDOWN_KEYS
+# metrics offered in the chart's series picker: total_timesteps is the x-axis, not a plottable series
+CHART_METRICS = [k for k in ROLLOUT_KEYS if k not in ("total_timesteps", "fps")]
 
 
 def pids_matching(pattern):
@@ -29,7 +32,11 @@ def pids_matching(pattern):
 
 
 def latest_log():
-    logs = sorted(CKPT.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    # exclude the dashboard's own stdout log and watch.py logs -- only training logs matter here
+    logs = sorted(
+        (p for p in CKPT.glob("*.log") if p.name != "dashboard.log" and not p.name.startswith("watch")),
+        key=lambda p: p.stat().st_mtime, reverse=True,
+    )
     return logs[0] if logs else None
 
 
@@ -52,16 +59,47 @@ def parse_log_tail(path, n_bytes=12_000):
     return metrics
 
 
+def parse_log_history(path, n_bytes=3_000_000, max_points=300):
+    """Every rollout/ table in the log is one data point; only reads the last
+    n_bytes of the file (these logs can grow into the tens of MB) and
+    downsamples evenly so the response stays small regardless of run length."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - n_bytes))
+            data = f.read().decode(errors="ignore")
+    except OSError:
+        return []
+    points = []
+    current = {}
+    for line in data.splitlines():
+        m = re.match(r"\|\s*(\w+)\s*\|\s*([-\d.eE]+)\s*\|", line)
+        if m and m.group(1) in ROLLOUT_KEYS:
+            current[m.group(1)] = float(m.group(2))
+        elif line.startswith("---") and "total_timesteps" in current:
+            points.append(current)
+            current = {}
+    if "total_timesteps" in current:
+        points.append(current)
+    if len(points) > max_points:
+        stride = len(points) / max_points
+        points = [points[int(i * stride)] for i in range(max_points)]
+    return points
+
+
 def list_checkpoints():
-    result = []
-    for p in sorted(CKPT.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True):
-        result.append({"label": p.name, "path": str(p), "mtime": p.stat().st_mtime})
+    # selfplay_opponent_*.zip is an internal working copy the training loop overwrites
+    # every refresh -- not a meaningful standalone checkpoint, so keep it out of the list
+    entries = [(p, p.name) for p in CKPT.glob("*.zip") if not p.name.startswith("selfplay_opponent_")]
     autosave = CKPT / "autosave"
     if autosave.exists():
         auto = sorted(autosave.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)[:15]
-        for p in auto:
-            result.append({"label": f"autosave/{p.name}", "path": str(p), "mtime": p.stat().st_mtime})
-    return result
+        entries += [(p, f"autosave/{p.name}") for p in auto]
+    # merged and sorted newest-first across both top-level and autosave, so index 0
+    # is always the single most recent checkpoint regardless of which dir it's in
+    entries.sort(key=lambda e: e[0].stat().st_mtime, reverse=True)
+    return [{"label": label, "path": str(p), "mtime": p.stat().st_mtime} for p, label in entries]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -80,6 +118,12 @@ class Handler(BaseHTTPRequestHandler):
             self._status()
         elif self.path == "/api/checkpoints":
             self._json({"checkpoints": list_checkpoints()})
+        elif self.path == "/api/history":
+            log = latest_log()
+            self._json({
+                "points": parse_log_history(log) if log else [],
+                "available_metrics": CHART_METRICS,
+            })
         else:
             self.send_response(404)
             self.end_headers()
@@ -137,10 +181,28 @@ class Handler(BaseHTTPRequestHandler):
         if resume_from and not pathlib.Path(resume_from).is_file():
             return self._json({"error": "resume_from checkpoint not found"}, 400)
 
-        log_path = CKPT / "train_dashboard.log"
-        cmd = [str(VENV_PY), "train.py", "--timesteps", timesteps, "--out", out]
-        if resume_from:
-            cmd += ["--resume-from", resume_from]
+        selfplay = bool(payload.get("selfplay"))
+        if selfplay:
+            if not resume_from:
+                return self._json({"error": "self-play needs a checkpoint to bootstrap from"}, 400)
+            log_path = CKPT / "train_selfplay_dashboard.log"
+            cmd = [str(VENV_PY), "train_selfplay.py", "--timesteps", timesteps,
+                   "--out", out, "--init-from", resume_from]
+            try:
+                refresh = payload.get("refresh_interval")
+                if refresh:
+                    cmd += ["--refresh-interval", str(int(refresh))]
+                ent_coef = payload.get("ent_coef")
+                if ent_coef not in (None, ""):
+                    cmd += ["--ent-coef", str(float(ent_coef))]
+            except (TypeError, ValueError):
+                return self._json({"error": "invalid refresh_interval/ent_coef"}, 400)
+        else:
+            log_path = CKPT / "train_dashboard.log"
+            cmd = [str(VENV_PY), "train.py", "--timesteps", timesteps, "--out", out]
+            if resume_from:
+                cmd += ["--resume-from", resume_from]
+
         with open(log_path, "wb") as logf:
             subprocess.Popen(
                 cmd, cwd=str(SCRIPTS), stdout=logf, stderr=subprocess.STDOUT,
@@ -158,19 +220,25 @@ class Handler(BaseHTTPRequestHandler):
         for pid in pids_matching(WATCH_PATTERN):
             subprocess.run(["kill", pid])
         checkpoint = payload.get("checkpoint")
+        if checkpoint == "__latest__":
+            ckpts = list_checkpoints()
+            checkpoint = ckpts[0]["path"] if ckpts else None
         if not checkpoint or not pathlib.Path(checkpoint).is_file():
             return self._json({"error": "valid checkpoint path required"}, 400)
         time.sleep(0.3)
         log_path = CKPT / "watch_dashboard.log"
         env = dict(os.environ)
         env.setdefault("DISPLAY", ":0")
+        cmd = [str(VENV_PY), "watch.py", checkpoint]
+        if payload.get("mirror"):
+            cmd += ["--opponent", checkpoint]
         with open(log_path, "wb") as logf:
             subprocess.Popen(
-                [str(VENV_PY), "watch.py", checkpoint], cwd=str(SCRIPTS),
+                cmd, cwd=str(SCRIPTS),
                 stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                 start_new_session=True, env=env,
             )
-        self._json({"started": True})
+        self._json({"started": True, "checkpoint": checkpoint})
 
     def _watch_stop(self, _payload):
         pids = pids_matching(WATCH_PATTERN)

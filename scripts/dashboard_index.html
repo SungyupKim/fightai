@@ -44,6 +44,13 @@
   button + button { margin-left: 8px; }
   .log { font-size: 11px; color: var(--muted); margin-top: 10px; word-break: break-all; }
   .full { grid-column: 1 / -1; }
+  .legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  .metric-chip { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; font-size: 12px; color: var(--muted); }
+  .metric-chip input { width: auto; margin: 0; accent-color: var(--accent); }
+  .metric-chip.active { color: var(--text); }
+  canvas[id^="chart-"] { width: 100%; height: 220px; display: block; }
+  .chart-empty { color: var(--muted); font-size: 12px; padding: 40px 0; text-align: center; }
 </style>
 </head>
 <body>
@@ -55,6 +62,7 @@
       <div class="metrics">
         <div class="metric"><div class="label">total_timesteps</div><div class="value" id="m-steps">-</div></div>
         <div class="metric"><div class="label">ep_rew_mean</div><div class="value" id="m-rew">-</div></div>
+        <div class="metric"><div class="label">b_ep_rew_mean</div><div class="value" id="m-brew">-</div></div>
         <div class="metric"><div class="label">ep_len_mean</div><div class="value" id="m-len">-</div></div>
         <div class="metric"><div class="label">fps</div><div class="value" id="m-fps">-</div></div>
       </div>
@@ -63,11 +71,23 @@
       <label>timesteps</label>
       <input id="in-timesteps" type="number" value="2000000" step="100000">
 
-      <label>resume from (선택)</label>
+      <label>resume from (셀프플레이는 필수)</label>
       <select id="in-resume"><option value="">-- 처음부터 새로 --</option></select>
 
       <label>output 이름</label>
       <input id="in-out" type="text" placeholder="예: ppo_dash_run">
+
+      <label style="display:flex; align-items:center; gap:8px; margin-top:14px;">
+        <input id="in-selfplay" type="checkbox" style="width:auto;">
+        <span style="margin:0;">셀프플레이 (상대도 학습된 정책, 주기적으로 스냅샷 갱신)</span>
+      </label>
+
+      <div id="selfplay-fields" style="display:none;">
+        <label>refresh interval (스텝, 선택)</label>
+        <input id="in-refresh" type="number" value="250000" step="10000">
+        <label>ent_coef 오버라이드 (선택, 예: 0.01)</label>
+        <input id="in-entcoef" type="number" step="0.001" placeholder="비워두면 체크포인트 값 유지">
+      </div>
 
       <div>
         <button id="btn-train-start">학습 시작</button>
@@ -82,11 +102,33 @@
       <label>체크포인트 선택</label>
       <select id="in-watch-checkpoint"></select>
 
+      <label style="display:flex; align-items:center; gap:8px; margin-top:14px;">
+        <input id="in-watch-mirror" type="checkbox" checked style="width:auto;">
+        <span style="margin:0;">미러 매치 (같은 체크포인트로 셀프플레이 대전)</span>
+      </label>
+
       <div>
-        <button id="btn-watch-start">뷰어 열기</button>
+        <button id="btn-watch-latest">최신 스냅샷 보기</button>
+        <button id="btn-watch-start" class="secondary">선택한 걸로 보기</button>
+      </div>
+      <div>
         <button id="btn-watch-stop" class="danger">뷰어 닫기</button>
         <button id="btn-refresh-ckpt" class="secondary">목록 새로고침</button>
       </div>
+    </div>
+
+    <div class="panel full">
+      <h2>총 보상 추이 (a vs b)</h2>
+      <div id="metric-picker-totals" class="legend" style="flex-wrap:wrap; gap:10px 16px;"></div>
+      <canvas id="chart-totals"></canvas>
+      <div id="chart-totals-empty" class="chart-empty" style="display:none;">아직 데이터 없음</div>
+    </div>
+
+    <div class="panel full">
+      <h2>보상 항목별 breakdown</h2>
+      <div id="metric-picker-breakdown" class="legend" style="flex-wrap:wrap; gap:10px 16px;"></div>
+      <canvas id="chart-breakdown"></canvas>
+      <div id="chart-breakdown-empty" class="chart-empty" style="display:none;">아직 데이터 없음</div>
     </div>
   </div>
 
@@ -112,6 +154,7 @@ async function refreshStatus() {
   $('watch-state').textContent = s.watching ? '실행 중' : '중지됨';
   $('m-steps').textContent = fmt(s.metrics.total_timesteps);
   $('m-rew').textContent = fmt(s.metrics.ep_rew_mean);
+  $('m-brew').textContent = fmt(s.metrics.b_ep_rew_mean);
   $('m-len').textContent = fmt(s.metrics.ep_len_mean);
   $('m-fps').textContent = fmt(s.metrics.fps);
   $('log-file').textContent = s.log_file ? ('log: ' + s.log_file) : '';
@@ -139,11 +182,20 @@ async function refreshCheckpoints() {
   if ([...watchSel.options].some(o => o.value === prevWatch)) watchSel.value = prevWatch;
 }
 
+$('in-selfplay').addEventListener('change', () => {
+  $('selfplay-fields').style.display = $('in-selfplay').checked ? 'block' : 'none';
+});
+
 $('btn-train-start').addEventListener('click', async () => {
+  const selfplay = $('in-selfplay').checked;
+  if (selfplay && !$('in-resume').value) return alert('셀프플레이는 resume from 체크포인트가 필요해요');
   const body = {
     timesteps: parseInt($('in-timesteps').value, 10),
     resume_from: $('in-resume').value || null,
     out: $('in-out').value || undefined,
+    selfplay,
+    refresh_interval: selfplay ? parseInt($('in-refresh').value, 10) : undefined,
+    ent_coef: selfplay && $('in-entcoef').value ? parseFloat($('in-entcoef').value) : undefined,
   };
   const r = await api('/api/train/start', { method: 'POST', body: JSON.stringify(body) });
   if (r.error) alert(r.error);
@@ -156,13 +208,20 @@ $('btn-train-stop').addEventListener('click', async () => {
   refreshStatus();
 });
 
-$('btn-watch-start').addEventListener('click', async () => {
-  const checkpoint = $('in-watch-checkpoint').value;
-  if (!checkpoint) return alert('체크포인트를 선택하세요');
-  const r = await api('/api/watch/start', { method: 'POST', body: JSON.stringify({ checkpoint }) });
+async function startWatch(checkpoint) {
+  const mirror = $('in-watch-mirror').checked;
+  const r = await api('/api/watch/start', { method: 'POST', body: JSON.stringify({ checkpoint, mirror }) });
   if (r.error) alert(r.error);
   refreshStatus();
+}
+
+$('btn-watch-start').addEventListener('click', () => {
+  const checkpoint = $('in-watch-checkpoint').value;
+  if (!checkpoint) return alert('체크포인트를 선택하세요');
+  startWatch(checkpoint);
 });
+
+$('btn-watch-latest').addEventListener('click', () => startWatch('__latest__'));
 
 $('btn-watch-stop').addEventListener('click', async () => {
   await api('/api/watch/stop', { method: 'POST' });
@@ -171,10 +230,141 @@ $('btn-watch-stop').addEventListener('click', async () => {
 
 $('btn-refresh-ckpt').addEventListener('click', refreshCheckpoints);
 
+function resizeCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(rect.width, 100), h = 220;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
+  canvas.style.height = h + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h };
+}
+
+function drawLine(ctx, pts, xKey, yKey, xMin, xMax, yMin, yMax, w, h, pad, color) {
+  const usable = pts.filter(p => p[yKey] !== undefined);
+  if (usable.length < 2) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  usable.forEach((p, i) => {
+    const x = pad + (p[xKey] - xMin) / (xMax - xMin || 1) * (w - pad * 2);
+    const y = h - pad - (p[yKey] - yMin) / (yMax - yMin || 1) * (h - pad * 2);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+const METRIC_COLORS = {
+  ep_rew_mean: '#4f8cff', b_ep_rew_mean: '#ffb454', ep_len_mean: '#8b93a3',
+  r_strike: '#3ecf8e', r_effort: '#ff5f6d', r_jerk: '#c792ea',
+  r_engage: '#5fd3f3', r_down: '#f78c6c', r_knockdown_entry: '#ffd166', r_terminal: '#9aa5b1',
+};
+const TOTALS_METRICS = ['ep_rew_mean', 'b_ep_rew_mean', 'ep_len_mean'];
+const BREAKDOWN_METRICS = ['r_strike', 'r_effort', 'r_jerk', 'r_engage', 'r_down', 'r_knockdown_entry', 'r_terminal'];
+
+// two independent chart instances: 'totals' (ep_rew_mean vs b_ep_rew_mean) and
+// 'breakdown' (the reward_breakdown terms) -- kept on separate axes since their
+// scales don't compare (e.g. r_engage ~-50 would swamp r_effort ~-15 on one chart)
+const charts = {
+  totals: { metrics: TOTALS_METRICS, active: new Set(['ep_rew_mean', 'b_ep_rew_mean']), built: false },
+  breakdown: { metrics: BREAKDOWN_METRICS, active: new Set(BREAKDOWN_METRICS), built: false },
+};
+let lastPoints = [];
+
+function buildMetricPicker(name) {
+  const chart = charts[name];
+  const el = $(`metric-picker-${name}`);
+  el.innerHTML = '';
+  chart.metrics.forEach(key => {
+    const label = document.createElement('label');
+    label.className = 'metric-chip' + (chart.active.has(key) ? ' active' : '');
+    const color = METRIC_COLORS[key] || '#8b93a3';
+    const hint = ALWAYS_NEGATIVE_KEYS.has(key) ? ' (비용, 낮을수록 좋음)' : '';
+    label.innerHTML = `<input type="checkbox" ${chart.active.has(key) ? 'checked' : ''}>
+      <span class="swatch" style="background:${color}"></span>${key}${hint}`;
+    label.querySelector('input').addEventListener('change', (e) => {
+      e.target.checked ? chart.active.add(key) : chart.active.delete(key);
+      label.classList.toggle('active', e.target.checked);
+      drawChart(name, lastPoints);
+    });
+    el.appendChild(label);
+  });
+  chart.built = true;
+}
+
+// these three are pure costs (Sum(action^2), Sum(delta-action^2), log1p(distance) --
+// all structurally >= 0 before their reward-side minus sign), so they can never be
+// positive as reward contributions. Flipped to positive "cost incurred" for display
+// only -- the actual training reward keeps its real sign, this doesn't touch that.
+const ALWAYS_NEGATIVE_KEYS = new Set(['r_effort', 'r_jerk', 'r_engage']);
+
+function drawChart(name, points) {
+  const series = [...charts[name].active];
+  const canvas = $(`chart-${name}`);
+  const empty = $(`chart-${name}-empty`);
+  const hasData = points && points.length >= 2 && series.some(k => points.some(p => p[k] !== undefined));
+  if (!hasData) {
+    canvas.style.display = 'none';
+    empty.style.display = 'block';
+    return;
+  }
+  canvas.style.display = 'block';
+  empty.style.display = 'none';
+
+  const { ctx, w, h } = resizeCanvas(canvas);
+  ctx.clearRect(0, 0, w, h);
+  const pad = 34;
+
+  points = points.map(p => {
+    const q = { ...p };
+    ALWAYS_NEGATIVE_KEYS.forEach(k => { if (q[k] !== undefined) q[k] = -q[k]; });
+    return q;
+  });
+
+  const xs = points.map(p => p.total_timesteps);
+  const ys = [];
+  points.forEach(p => series.forEach(k => { if (p[k] !== undefined) ys.push(p[k]); }));
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  const yMin = Math.min(...ys), yMax = Math.max(...ys);
+
+  ctx.strokeStyle = '#2a2f3a';
+  ctx.fillStyle = '#8b93a3';
+  ctx.font = '10px -apple-system, sans-serif';
+  ctx.lineWidth = 1;
+  const rows = 4;
+  for (let i = 0; i <= rows; i++) {
+    const y = pad + (h - pad * 2) * (i / rows);
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - 8, y); ctx.stroke();
+    const val = yMax - (yMax - yMin) * (i / rows);
+    ctx.fillText(Math.round(val).toLocaleString(), 4, y + 3);
+  }
+  ctx.fillText(xMin.toLocaleString(), pad, h - 6);
+  const xMaxLabel = xMax.toLocaleString();
+  ctx.fillText(xMaxLabel, w - 8 - ctx.measureText(xMaxLabel).width, h - 6);
+
+  series.forEach(key => {
+    drawLine(ctx, points, 'total_timesteps', key, xMin, xMax, yMin, yMax, w, h, pad, METRIC_COLORS[key] || '#8b93a3');
+  });
+}
+
+async function refreshHistory() {
+  const { points } = await api('/api/history');
+  lastPoints = points || [];
+  Object.keys(charts).forEach(name => {
+    if (!charts[name].built) buildMetricPicker(name);
+    drawChart(name, lastPoints);
+  });
+}
+
 refreshStatus();
 refreshCheckpoints();
+refreshHistory();
 setInterval(refreshStatus, 2000);
 setInterval(refreshCheckpoints, 10000);
+setInterval(refreshHistory, 5000);
+window.addEventListener('resize', () => Object.keys(charts).forEach(name => drawChart(name, lastPoints)));
 </script>
 </body>
 </html>

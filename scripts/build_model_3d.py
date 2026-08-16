@@ -1,10 +1,17 @@
-"""Generates a 2D (XZ-plane) ragdoll fighter MJCF model with two characters facing off."""
+"""Generates a full-3D ragdoll fighter MJCF model with two characters facing off.
+
+Root translation (x, y) is directly actuated, same philosophy as the 2D model --
+skip learning locomotion from scratch. Height (z) and all orientation (a ball
+joint) are left fully passive/physical, so balance and knockdowns stay a real
+physics outcome rather than something scripted.
+"""
 
 FIGHTER_TEMPLATE = """
-    <body name="{p}torso" pos="{x} 0 1.06">
+    <body name="{p}torso" pos="{x} {y} 1.06">
       <joint name="{p}root_x" type="slide" axis="1 0 0" limited="false" damping="0.5"/>
+      <joint name="{p}root_y" type="slide" axis="0 1 0" limited="false" damping="0.5"/>
       <joint name="{p}root_z" type="slide" axis="0 0 1" limited="false" damping="0.5"/>
-      <joint name="{p}root_ry" type="hinge" axis="0 1 0" limited="false" damping="0.5"/>
+      <joint name="{p}root_orient" type="ball" damping="0.5"/>
       <geom name="{p}torso" type="capsule" fromto="0 0 -0.22 0 0 0.22" size="0.10" rgba="{color}"/>
 
       <body name="{p}head" pos="0 0 0.22">
@@ -36,7 +43,6 @@ FIGHTER_TEMPLATE = """
         <body name="{p}shin_r" pos="0 0 -0.42">
           <joint name="{p}knee_r" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
           <geom name="{p}shin_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="{color}"/>
-          <site name="{p}foot_r" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
 
@@ -46,7 +52,6 @@ FIGHTER_TEMPLATE = """
         <body name="{p}shin_l" pos="0 0 -0.42">
           <joint name="{p}knee_l" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
           <geom name="{p}shin_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="{color}"/>
-          <site name="{p}foot_l" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
     </body>
@@ -63,21 +68,16 @@ ACTUATOR_GEAR = {
 }
 
 ROOT_GEAR = 90
-# root_ry is not part of the RL action space -- env.py drives it with a small always-on
-# PD balance assist (like a person's reflexes), since a standing biped is an inverted
-# pendulum that plain passive damping/stiffness can't stabilize (verified: even stiffness=200
-# still toppled from a small 0.4 rad/s nudge). A strong hit can still overwhelm the assist.
-BALANCE_GEAR = 250
 
 
-def make_fighter(prefix, x, color):
-    return FIGHTER_TEMPLATE.format(p=prefix, x=x, color=color)
+def make_fighter(prefix, x, y, color):
+    return FIGHTER_TEMPLATE.format(p=prefix, x=x, y=y, color=color)
 
 
 def make_actuators(prefix):
     lines = [
         f'    <motor name="{prefix}root_x" joint="{prefix}root_x" gear="{ROOT_GEAR}" ctrlrange="-1 1"/>',
-        f'    <motor name="{prefix}root_ry" joint="{prefix}root_ry" gear="{BALANCE_GEAR}" ctrlrange="-1 1"/>',
+        f'    <motor name="{prefix}root_y" joint="{prefix}root_y" gear="{ROOT_GEAR}" ctrlrange="-1 1"/>',
     ]
     for j in JOINTS:
         lines.append(
@@ -88,10 +88,10 @@ def make_actuators(prefix):
 
 
 def build():
-    fighters = make_fighter("a_", -0.9, "0.85 0.2 0.2 1") + make_fighter("b_", 0.9, "0.2 0.4 0.85 1")
+    fighters = make_fighter("a_", -0.9, 0.0, "0.85 0.2 0.2 1") + make_fighter("b_", 0.9, 0.0, "0.2 0.4 0.85 1")
     actuators = make_actuators("a_") + "\n" + make_actuators("b_")
 
-    return f"""<mujoco model="fighter2d">
+    return f"""<mujoco model="fighter3d">
   <compiler angle="degree"/>
   <option gravity="0 0 -9.81" timestep="0.005"/>
 
@@ -102,13 +102,14 @@ def build():
   <asset>
     <texture type="skybox" builtin="gradient" rgb1="0.6 0.7 0.9" rgb2="0.1 0.1 0.2" width="256" height="256"/>
     <texture name="grid" type="2d" builtin="checker" rgb1="0.3 0.3 0.3" rgb2="0.4 0.4 0.4" width="300" height="300"/>
-    <material name="grid" texture="grid" texrepeat="6 6" reflectance="0.1"/>
+    <material name="grid" texture="grid" texrepeat="8 8" reflectance="0.1"/>
   </asset>
 
   <worldbody>
     <light pos="0 -2 3" dir="0 0.5 -1" diffuse="0.8 0.8 0.8"/>
-    <geom name="floor" type="plane" size="5 3 0.1" material="grid" friction="1.0 0.01 0.01"/>
+    <geom name="floor" type="plane" size="6 6 0.1" material="grid" friction="1.0 0.01 0.01"/>
     <camera name="side" pos="0 -4.5 1.1" xyaxes="1 0 0 0 0 1"/>
+    <camera name="quarter" pos="-3 -3.5 2.2" xyaxes="0.7 -0.7 0 0.3 0.3 0.9"/>
 {fighters}
   </worldbody>
 
@@ -121,6 +122,6 @@ def build():
 
 if __name__ == "__main__":
     import pathlib
-    out = pathlib.Path(__file__).resolve().parent.parent / "models" / "fighter2d.xml"
+    out = pathlib.Path(__file__).resolve().parent.parent / "models" / "fighter3d.xml"
     out.write_text(build())
     print(f"wrote {out}")

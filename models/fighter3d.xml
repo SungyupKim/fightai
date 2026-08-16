@@ -1,4 +1,4 @@
-<mujoco model="fighter2d">
+<mujoco model="fighter3d">
   <compiler angle="degree"/>
   <option gravity="0 0 -9.81" timestep="0.005"/>
 
@@ -9,18 +9,20 @@
   <asset>
     <texture type="skybox" builtin="gradient" rgb1="0.6 0.7 0.9" rgb2="0.1 0.1 0.2" width="256" height="256"/>
     <texture name="grid" type="2d" builtin="checker" rgb1="0.3 0.3 0.3" rgb2="0.4 0.4 0.4" width="300" height="300"/>
-    <material name="grid" texture="grid" texrepeat="6 6" reflectance="0.1"/>
+    <material name="grid" texture="grid" texrepeat="8 8" reflectance="0.1"/>
   </asset>
 
   <worldbody>
     <light pos="0 -2 3" dir="0 0.5 -1" diffuse="0.8 0.8 0.8"/>
-    <geom name="floor" type="plane" size="5 3 0.1" material="grid" friction="1.0 0.01 0.01"/>
+    <geom name="floor" type="plane" size="6 6 0.1" material="grid" friction="1.0 0.01 0.01"/>
     <camera name="side" pos="0 -4.5 1.1" xyaxes="1 0 0 0 0 1"/>
+    <camera name="quarter" pos="-3 -3.5 2.2" xyaxes="0.7 -0.7 0 0.3 0.3 0.9"/>
 
-    <body name="a_torso" pos="-0.9 0 1.06">
+    <body name="a_torso" pos="-0.9 0.0 1.06">
       <joint name="a_root_x" type="slide" axis="1 0 0" limited="false" damping="0.5"/>
+      <joint name="a_root_y" type="slide" axis="0 1 0" limited="false" damping="0.5"/>
       <joint name="a_root_z" type="slide" axis="0 0 1" limited="false" damping="0.5"/>
-      <joint name="a_root_ry" type="hinge" axis="0 1 0" limited="false" damping="0.5"/>
+      <joint name="a_root_orient" type="ball" damping="0.5"/>
       <geom name="a_torso" type="capsule" fromto="0 0 -0.22 0 0 0.22" size="0.10" rgba="0.85 0.2 0.2 1"/>
 
       <body name="a_head" pos="0 0 0.22">
@@ -52,7 +54,6 @@
         <body name="a_shin_r" pos="0 0 -0.42">
           <joint name="a_knee_r" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
           <geom name="a_shin_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="0.85 0.2 0.2 1"/>
-          <site name="a_foot_r" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
 
@@ -62,15 +63,15 @@
         <body name="a_shin_l" pos="0 0 -0.42">
           <joint name="a_knee_l" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
           <geom name="a_shin_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="0.85 0.2 0.2 1"/>
-          <site name="a_foot_l" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
     </body>
 
-    <body name="b_torso" pos="0.9 0 1.06">
+    <body name="b_torso" pos="0.9 0.0 1.06">
       <joint name="b_root_x" type="slide" axis="1 0 0" limited="false" damping="0.5"/>
+      <joint name="b_root_y" type="slide" axis="0 1 0" limited="false" damping="0.5"/>
       <joint name="b_root_z" type="slide" axis="0 0 1" limited="false" damping="0.5"/>
-      <joint name="b_root_ry" type="hinge" axis="0 1 0" limited="false" damping="0.5"/>
+      <joint name="b_root_orient" type="ball" damping="0.5"/>
       <geom name="b_torso" type="capsule" fromto="0 0 -0.22 0 0 0.22" size="0.10" rgba="0.2 0.4 0.85 1"/>
 
       <body name="b_head" pos="0 0 0.22">
@@ -102,7 +103,6 @@
         <body name="b_shin_r" pos="0 0 -0.42">
           <joint name="b_knee_r" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
           <geom name="b_shin_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="0.2 0.4 0.85 1"/>
-          <site name="b_foot_r" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
 
@@ -112,7 +112,6 @@
         <body name="b_shin_l" pos="0 0 -0.42">
           <joint name="b_knee_l" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
           <geom name="b_shin_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="0.2 0.4 0.85 1"/>
-          <site name="b_foot_l" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
     </body>
@@ -121,7 +120,7 @@
 
   <actuator>
     <motor name="a_root_x" joint="a_root_x" gear="90" ctrlrange="-1 1"/>
-    <motor name="a_root_ry" joint="a_root_ry" gear="250" ctrlrange="-1 1"/>
+    <motor name="a_root_y" joint="a_root_y" gear="90" ctrlrange="-1 1"/>
     <motor name="a_head" joint="a_head" gear="20" ctrlrange="-1 1"/>
     <motor name="a_shoulder_r" joint="a_shoulder_r" gear="45" ctrlrange="-1 1"/>
     <motor name="a_elbow_r" joint="a_elbow_r" gear="30" ctrlrange="-1 1"/>
@@ -132,7 +131,7 @@
     <motor name="a_hip_l" joint="a_hip_l" gear="60" ctrlrange="-1 1"/>
     <motor name="a_knee_l" joint="a_knee_l" gear="40" ctrlrange="-1 1"/>
     <motor name="b_root_x" joint="b_root_x" gear="90" ctrlrange="-1 1"/>
-    <motor name="b_root_ry" joint="b_root_ry" gear="250" ctrlrange="-1 1"/>
+    <motor name="b_root_y" joint="b_root_y" gear="90" ctrlrange="-1 1"/>
     <motor name="b_head" joint="b_head" gear="20" ctrlrange="-1 1"/>
     <motor name="b_shoulder_r" joint="b_shoulder_r" gear="45" ctrlrange="-1 1"/>
     <motor name="b_elbow_r" joint="b_elbow_r" gear="30" ctrlrange="-1 1"/>
