@@ -51,6 +51,10 @@
   .metric-chip.active { color: var(--text); }
   canvas[id^="chart-"] { width: 100%; height: 220px; display: block; }
   .chart-empty { color: var(--muted); font-size: 12px; padding: 40px 0; text-align: center; }
+  .pager { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .pager button { margin: 0; padding: 3px 9px; font-size: 12px; font-weight: 400; background: #2a2f3a; }
+  .pager button:disabled { opacity: .35; cursor: not-allowed; }
+  .pager .page-info { white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -73,17 +77,29 @@
 
       <label>resume from (셀프플레이는 필수)</label>
       <select id="in-resume"><option value="">-- 처음부터 새로 --</option></select>
+      <div class="pager" id="pager-resume"></div>
 
       <label>output 이름</label>
       <input id="in-out" type="text" placeholder="예: ppo_dash_run">
 
-      <label style="display:flex; align-items:center; gap:8px; margin-top:14px;">
-        <input id="in-selfplay" type="checkbox" style="width:auto;">
-        <span style="margin:0;">셀프플레이 (상대도 학습된 정책, 주기적으로 스냅샷 갱신)</span>
-      </label>
+      <label>학습 방식</label>
+      <div style="display:flex; flex-direction:column; gap:6px; margin:4px 0 0;">
+        <label style="display:flex; align-items:center; gap:8px; margin:0;">
+          <input type="radio" name="train-mode" id="mode-scripted" value="scripted" checked style="width:auto;">
+          <span style="margin:0;">스크립트 상대</span>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; margin:0;">
+          <input type="radio" name="train-mode" id="mode-selfplay" value="selfplay" style="width:auto;">
+          <span style="margin:0;">셀프플레이 (얼려진 상대 스냅샷, 주기적으로 갱신)</span>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; margin:0;">
+          <input type="radio" name="train-mode" id="mode-paired" value="paired" style="width:auto;">
+          <span style="margin:0;">paired 셀프플레이 (양쪽 다 같은 살아있는 정책, 얼려진 상대 없음)</span>
+        </label>
+      </div>
 
       <div id="selfplay-fields" style="display:none;">
-        <label>refresh interval (스텝, 선택)</label>
+        <label>refresh interval (스텝, 선택 -- 셀프플레이 전용)</label>
         <input id="in-refresh" type="number" value="250000" step="10000">
         <label>ent_coef 오버라이드 (선택, 예: 0.01)</label>
         <input id="in-entcoef" type="number" step="0.001" placeholder="비워두면 체크포인트 값 유지">
@@ -101,6 +117,7 @@
 
       <label>체크포인트 선택</label>
       <select id="in-watch-checkpoint"></select>
+      <div class="pager" id="pager-watch"></div>
 
       <label style="display:flex; align-items:center; gap:8px; margin-top:14px;">
         <input id="in-watch-mirror" type="checkbox" checked style="width:auto;">
@@ -162,40 +179,77 @@ async function refreshStatus() {
   $('btn-train-stop').disabled = !s.training;
 }
 
-async function refreshCheckpoints() {
-  const { checkpoints } = await api('/api/checkpoints');
-  const resumeSel = $('in-resume');
-  const watchSel = $('in-watch-checkpoint');
-  const prevResume = resumeSel.value;
-  const prevWatch = watchSel.value;
-  resumeSel.innerHTML = '<option value="">-- 처음부터 새로 --</option>';
-  watchSel.innerHTML = '';
-  for (const c of checkpoints) {
-    const o1 = document.createElement('option');
-    o1.value = c.path; o1.textContent = c.label;
-    resumeSel.appendChild(o1);
-    const o2 = document.createElement('option');
-    o2.value = c.path; o2.textContent = c.label;
-    watchSel.appendChild(o2);
+const CKPT_PAGE_SIZE = 20;
+// independent pagination state per picker -- page 1 is always the newest checkpoints
+// (backend sorts newest-first), so opening either picker lands on the latest by default
+const ckptPickers = {
+  resume: { page: 1, selectId: 'in-resume', pagerId: 'pager-resume', placeholder: '-- 처음부터 새로 --' },
+  watch: { page: 1, selectId: 'in-watch-checkpoint', pagerId: 'pager-watch', placeholder: null },
+};
+
+async function loadCheckpointPage(picker) {
+  const data = await api(`/api/checkpoints?page=${picker.page}&page_size=${CKPT_PAGE_SIZE}`);
+  picker.page = data.page; // server clamps out-of-range pages, stay in sync
+  const sel = $(picker.selectId);
+  const prev = sel.value;
+  sel.innerHTML = '';
+  if (picker.placeholder) {
+    const ph = document.createElement('option');
+    ph.value = ''; ph.textContent = picker.placeholder;
+    sel.appendChild(ph);
   }
-  if ([...resumeSel.options].some(o => o.value === prevResume)) resumeSel.value = prevResume;
-  if ([...watchSel.options].some(o => o.value === prevWatch)) watchSel.value = prevWatch;
+  for (const c of data.checkpoints) {
+    const o = document.createElement('option');
+    o.value = c.path; o.textContent = c.label;
+    sel.appendChild(o);
+  }
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+
+  const pager = $(picker.pagerId);
+  pager.innerHTML = '';
+  const prevBtn = document.createElement('button');
+  prevBtn.textContent = '◀ 이전';
+  prevBtn.type = 'button';
+  prevBtn.disabled = picker.page <= 1;
+  prevBtn.onclick = () => { picker.page -= 1; loadCheckpointPage(picker); };
+  const nextBtn = document.createElement('button');
+  nextBtn.textContent = '다음 ▶';
+  nextBtn.type = 'button';
+  nextBtn.disabled = picker.page >= data.total_pages;
+  nextBtn.onclick = () => { picker.page += 1; loadCheckpointPage(picker); };
+  const info = document.createElement('span');
+  info.className = 'page-info';
+  info.textContent = `${data.page}/${data.total_pages}페이지 (최신순, 전체 ${data.total}개)`;
+  pager.append(prevBtn, info, nextBtn);
 }
 
-$('in-selfplay').addEventListener('change', () => {
-  $('selfplay-fields').style.display = $('in-selfplay').checked ? 'block' : 'none';
-});
+function refreshCheckpoints() {
+  return Promise.all(Object.values(ckptPickers).map(loadCheckpointPage));
+}
+
+function trainMode() {
+  return document.querySelector('input[name="train-mode"]:checked').value;
+}
+
+document.querySelectorAll('input[name="train-mode"]').forEach(el => el.addEventListener('change', () => {
+  $('selfplay-fields').style.display = trainMode() === 'scripted' ? 'none' : 'block';
+  $('in-refresh').closest('label') && ($('in-refresh').style.display = trainMode() === 'paired' ? 'none' : '');
+  $('in-refresh').previousElementSibling.style.display = trainMode() === 'paired' ? 'none' : '';
+}));
 
 $('btn-train-start').addEventListener('click', async () => {
-  const selfplay = $('in-selfplay').checked;
-  if (selfplay && !$('in-resume').value) return alert('셀프플레이는 resume from 체크포인트가 필요해요');
+  const mode = trainMode();
+  const selfplay = mode === 'selfplay';
+  const paired = mode === 'paired';
+  if ((selfplay || paired) && !$('in-resume').value) return alert('셀프플레이/paired는 resume from 체크포인트가 필요해요');
   const body = {
     timesteps: parseInt($('in-timesteps').value, 10),
     resume_from: $('in-resume').value || null,
     out: $('in-out').value || undefined,
     selfplay,
+    paired,
     refresh_interval: selfplay ? parseInt($('in-refresh').value, 10) : undefined,
-    ent_coef: selfplay && $('in-entcoef').value ? parseFloat($('in-entcoef').value) : undefined,
+    ent_coef: (selfplay || paired) && $('in-entcoef').value ? parseFloat($('in-entcoef').value) : undefined,
   };
   const r = await api('/api/train/start', { method: 'POST', body: JSON.stringify(body) });
   if (r.error) alert(r.error);
@@ -259,10 +313,11 @@ function drawLine(ctx, pts, xKey, yKey, xMin, xMax, yMin, yMax, w, h, pad, color
 const METRIC_COLORS = {
   ep_rew_mean: '#4f8cff', b_ep_rew_mean: '#ffb454', ep_len_mean: '#8b93a3',
   r_strike: '#3ecf8e', r_effort: '#ff5f6d', r_jerk: '#c792ea',
-  r_engage: '#5fd3f3', r_down: '#f78c6c', r_knockdown_entry: '#ffd166', r_terminal: '#9aa5b1',
+  r_engage: '#5fd3f3', r_down: '#f78c6c', r_knockdown_entry: '#ffd166',
+  r_balance: '#ef9fbc', r_ground: '#7fd88f', r_knee: '#e08a4f', r_terminal: '#9aa5b1',
 };
 const TOTALS_METRICS = ['ep_rew_mean', 'b_ep_rew_mean', 'ep_len_mean'];
-const BREAKDOWN_METRICS = ['r_strike', 'r_effort', 'r_jerk', 'r_engage', 'r_down', 'r_knockdown_entry', 'r_terminal'];
+const BREAKDOWN_METRICS = ['r_strike', 'r_effort', 'r_jerk', 'r_engage', 'r_down', 'r_knockdown_entry', 'r_balance', 'r_ground', 'r_knee', 'r_terminal'];
 
 // two independent chart instances: 'totals' (ep_rew_mean vs b_ep_rew_mean) and
 // 'breakdown' (the reward_breakdown terms) -- kept on separate axes since their

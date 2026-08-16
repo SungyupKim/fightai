@@ -10,6 +10,7 @@ import re
 import subprocess
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
@@ -18,9 +19,9 @@ VENV_PY = ROOT / ".venv" / "bin" / "python"
 
 CKPT.mkdir(exist_ok=True)
 
-TRAIN_PATTERN = r"train(_selfplay)?\.py --timesteps"
+TRAIN_PATTERN = r"train(_selfplay(_paired)?)?\.py --timesteps"
 WATCH_PATTERN = r"watch\.py"
-BREAKDOWN_KEYS = ["r_strike", "r_effort", "r_jerk", "r_engage", "r_down", "r_knockdown_entry", "r_terminal"]
+BREAKDOWN_KEYS = ["r_strike", "r_effort", "r_jerk", "r_engage", "r_down", "r_knockdown_entry", "r_balance", "r_ground", "r_knee", "r_terminal"]
 ROLLOUT_KEYS = ["total_timesteps", "ep_rew_mean", "b_ep_rew_mean", "ep_len_mean", "fps"] + BREAKDOWN_KEYS
 # metrics offered in the chart's series picker: total_timesteps is the x-axis, not a plottable series
 CHART_METRICS = [k for k in ROLLOUT_KEYS if k not in ("total_timesteps", "fps")]
@@ -91,15 +92,30 @@ def parse_log_history(path, n_bytes=3_000_000, max_points=300):
 def list_checkpoints():
     # selfplay_opponent_*.zip is an internal working copy the training loop overwrites
     # every refresh -- not a meaningful standalone checkpoint, so keep it out of the list
-    entries = [(p, p.name) for p in CKPT.glob("*.zip") if not p.name.startswith("selfplay_opponent_")]
+    entries = [(p, p.name, p.stat().st_mtime)
+               for p in CKPT.glob("*.zip") if not p.name.startswith("selfplay_opponent_")]
     autosave = CKPT / "autosave"
     if autosave.exists():
         auto = sorted(autosave.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)[:15]
-        entries += [(p, f"autosave/{p.name}") for p in auto]
+        entries += [(p, f"autosave/{p.name}", p.stat().st_mtime) for p in auto]
     # merged and sorted newest-first across both top-level and autosave, so index 0
     # is always the single most recent checkpoint regardless of which dir it's in
-    entries.sort(key=lambda e: e[0].stat().st_mtime, reverse=True)
-    return [{"label": label, "path": str(p), "mtime": p.stat().st_mtime} for p, label in entries]
+    entries.sort(key=lambda e: e[2], reverse=True)
+    return [{"label": label, "path": str(p), "mtime": mtime} for p, label, mtime in entries]
+
+
+def paginate_checkpoints(page, page_size):
+    all_ckpts = list_checkpoints()
+    total = len(all_ckpts)
+    page_size = min(max(page_size, 1), 200)
+    total_pages = max(1, -(-total // page_size))  # ceil div
+    page = min(max(page, 1), total_pages)
+    start = (page - 1) * page_size
+    return {
+        "checkpoints": all_ckpts[start:start + page_size],
+        "page": page, "page_size": page_size,
+        "total": total, "total_pages": total_pages,
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -112,13 +128,20 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/":
+        path = urlparse(self.path).path
+        if path == "/":
             self._serve_index()
-        elif self.path == "/api/status":
+        elif path == "/api/status":
             self._status()
-        elif self.path == "/api/checkpoints":
-            self._json({"checkpoints": list_checkpoints()})
-        elif self.path == "/api/history":
+        elif path == "/api/checkpoints":
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                page = int(qs.get("page", ["1"])[0])
+                page_size = int(qs.get("page_size", ["20"])[0])
+            except ValueError:
+                return self._json({"error": "invalid page/page_size"}, 400)
+            self._json(paginate_checkpoints(page, page_size))
+        elif path == "/api/history":
             log = latest_log()
             self._json({
                 "points": parse_log_history(log) if log else [],
@@ -182,7 +205,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "resume_from checkpoint not found"}, 400)
 
         selfplay = bool(payload.get("selfplay"))
-        if selfplay:
+        paired = bool(payload.get("paired"))
+        if paired:
+            if not resume_from:
+                return self._json({"error": "paired self-play needs a checkpoint to bootstrap from"}, 400)
+            log_path = CKPT / "train_paired_dashboard.log"
+            cmd = [str(VENV_PY), "train_selfplay_paired.py", "--timesteps", timesteps,
+                   "--out", out, "--init-from", resume_from]
+            try:
+                ent_coef = payload.get("ent_coef")
+                if ent_coef not in (None, ""):
+                    cmd += ["--ent-coef", str(float(ent_coef))]
+            except (TypeError, ValueError):
+                return self._json({"error": "invalid ent_coef"}, 400)
+        elif selfplay:
             if not resume_from:
                 return self._json({"error": "self-play needs a checkpoint to bootstrap from"}, 400)
             log_path = CKPT / "train_selfplay_dashboard.log"
