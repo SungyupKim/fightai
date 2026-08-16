@@ -36,6 +36,7 @@ FIGHTER_TEMPLATE = """
         <body name="{p}shin_r" pos="0 0 -0.42">
           <joint name="{p}knee_r" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
           <geom name="{p}shin_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="{color}"/>
+          <site name="{p}foot_r" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
 
@@ -45,6 +46,7 @@ FIGHTER_TEMPLATE = """
         <body name="{p}shin_l" pos="0 0 -0.42">
           <joint name="{p}knee_l" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
           <geom name="{p}shin_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="{color}"/>
+          <site name="{p}foot_l" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
     </body>
@@ -60,13 +62,23 @@ ACTUATOR_GEAR = {
     "hip_r": 60, "knee_r": 40, "hip_l": 60, "knee_l": 40,
 }
 
+ROOT_GEAR = 90
+# root_ry is not part of the RL action space -- env.py drives it with a small always-on
+# PD balance assist (like a person's reflexes), since a standing biped is an inverted
+# pendulum that plain passive damping/stiffness can't stabilize (verified: even stiffness=200
+# still toppled from a small 0.4 rad/s nudge). A strong hit can still overwhelm the assist.
+BALANCE_GEAR = 250
+
 
 def make_fighter(prefix, x, color):
     return FIGHTER_TEMPLATE.format(p=prefix, x=x, color=color)
 
 
 def make_actuators(prefix):
-    lines = []
+    lines = [
+        f'    <motor name="{prefix}root_x" joint="{prefix}root_x" gear="{ROOT_GEAR}" ctrlrange="-1 1"/>',
+        f'    <motor name="{prefix}root_ry" joint="{prefix}root_ry" gear="{BALANCE_GEAR}" ctrlrange="-1 1"/>',
+    ]
     for j in JOINTS:
         lines.append(
             f'    <motor name="{prefix}{j}" joint="{prefix}{j}" '
