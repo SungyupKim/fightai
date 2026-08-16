@@ -1,7 +1,8 @@
 # fightai
 
 2D MuJoCo 랙돌 격투 에이전트. PPO로 학습하며, 셀프플레이(자기 자신의 과거 스냅샷과 대전)로 훈련한다.
-설계 배경과 리워드 셰이핑 히스토리는 [`docs/fightai_기술문서.docx`](docs/fightai_기술문서.docx) 참고.
+설계 배경과 리워드 셰이핑 히스토리는 [`docs/fightai_기술문서.md`](docs/fightai_기술문서.md)
+(또는 [`.docx`](docs/fightai_기술문서.docx)) 참고.
 
 ## Setup
 
