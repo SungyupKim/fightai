@@ -57,7 +57,7 @@ class BreakdownCallback(BaseCallback):
     be traced back to which specific term moved instead of guessing from a one-off
     diagnostic script."""
 
-    KEYS = ["strike", "effort", "jerk", "engage", "down", "knockdown_entry", "terminal"]
+    KEYS = ["strike", "effort", "jerk", "engage", "down", "knockdown_entry", "balance", "ground", "knee", "terminal"]
 
     def __init__(self, window=100):
         super().__init__()
