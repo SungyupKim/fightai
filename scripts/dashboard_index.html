@@ -55,6 +55,9 @@
   .pager button { margin: 0; padding: 3px 9px; font-size: 12px; font-weight: 400; background: #2a2f3a; }
   .pager button:disabled { opacity: .35; cursor: not-allowed; }
   .pager .page-info { white-space: nowrap; }
+  .matchup-table { width: 100%; margin-top: 10px; font-size: 12px; border-collapse: collapse; }
+  .matchup-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px 6px 0; border-bottom: 1px solid var(--border); }
+  .matchup-table td { padding: 5px 8px 5px 0; border-bottom: 1px solid var(--border); }
 </style>
 </head>
 <body>
@@ -96,11 +99,22 @@
           <input type="radio" name="train-mode" id="mode-paired" value="paired" style="width:auto;">
           <span style="margin:0;">paired 셀프플레이 (양쪽 다 같은 살아있는 정책, 얼려진 상대 없음)</span>
         </label>
+        <label style="display:flex; align-items:center; gap:8px; margin:0;">
+          <input type="radio" name="train-mode" id="mode-league" value="league" style="width:auto;">
+          <span style="margin:0;">리그전 (P1/P2 별도 모델, 서로 번갈아 학습)</span>
+        </label>
+      </div>
+
+      <div id="league-fields" style="display:none;">
+        <label>라운드 수 (P1↔P2 번갈아 학습, 위 timesteps는 "라운드당" 스텝 수)</label>
+        <input id="in-rounds" type="number" value="20" step="1">
       </div>
 
       <div id="selfplay-fields" style="display:none;">
-        <label>refresh interval (스텝, 선택 -- 셀프플레이 전용)</label>
-        <input id="in-refresh" type="number" value="250000" step="10000">
+        <div id="refresh-field">
+          <label>refresh interval (스텝, 선택 -- 셀프플레이 전용)</label>
+          <input id="in-refresh" type="number" value="250000" step="10000">
+        </div>
         <label>ent_coef 오버라이드 (선택, 예: 0.01)</label>
         <input id="in-entcoef" type="number" step="0.001" placeholder="비워두면 체크포인트 값 유지">
       </div>
@@ -147,6 +161,31 @@
       <canvas id="chart-breakdown"></canvas>
       <div id="chart-breakdown-empty" class="chart-empty" style="display:none;">아직 데이터 없음</div>
     </div>
+
+    <div class="panel full">
+      <h2>대결 지표 (모델 대 모델 실측)</h2>
+      <div style="display:flex; gap:16px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:220px;">
+          <label>Fighter A (왼쪽 역할)</label>
+          <select id="in-matchup-a"></select>
+          <div class="pager" id="pager-matchup-a"></div>
+        </div>
+        <div style="flex:1; min-width:220px;">
+          <label>Fighter B (오른쪽 역할)</label>
+          <select id="in-matchup-b"></select>
+          <div class="pager" id="pager-matchup-b"></div>
+        </div>
+        <div style="flex:0 0 120px;">
+          <label>에피소드 수</label>
+          <input id="in-matchup-episodes" type="number" value="60" step="10">
+        </div>
+      </div>
+      <div>
+        <button id="btn-matchup-run">대결 측정 시작</button>
+      </div>
+      <div class="log" id="matchup-status"></div>
+      <div id="matchup-results" style="margin-top:14px; display:none;"></div>
+    </div>
   </div>
 
 <script>
@@ -185,6 +224,8 @@ const CKPT_PAGE_SIZE = 20;
 const ckptPickers = {
   resume: { page: 1, selectId: 'in-resume', pagerId: 'pager-resume', placeholder: '-- 처음부터 새로 --' },
   watch: { page: 1, selectId: 'in-watch-checkpoint', pagerId: 'pager-watch', placeholder: null },
+  matchupA: { page: 1, selectId: 'in-matchup-a', pagerId: 'pager-matchup-a', placeholder: null },
+  matchupB: { page: 1, selectId: 'in-matchup-b', pagerId: 'pager-matchup-b', placeholder: null },
 };
 
 async function loadCheckpointPage(picker) {
@@ -232,22 +273,28 @@ function trainMode() {
 }
 
 document.querySelectorAll('input[name="train-mode"]').forEach(el => el.addEventListener('change', () => {
-  $('selfplay-fields').style.display = trainMode() === 'scripted' ? 'none' : 'block';
-  $('in-refresh').closest('label') && ($('in-refresh').style.display = trainMode() === 'paired' ? 'none' : '');
-  $('in-refresh').previousElementSibling.style.display = trainMode() === 'paired' ? 'none' : '';
+  const mode = trainMode();
+  $('selfplay-fields').style.display = (mode === 'selfplay' || mode === 'paired') ? 'block' : 'none';
+  $('refresh-field').style.display = mode === 'paired' ? 'none' : 'block';
+  $('league-fields').style.display = mode === 'league' ? 'block' : 'none';
 }));
 
 $('btn-train-start').addEventListener('click', async () => {
   const mode = trainMode();
   const selfplay = mode === 'selfplay';
   const paired = mode === 'paired';
-  if ((selfplay || paired) && !$('in-resume').value) return alert('셀프플레이/paired는 resume from 체크포인트가 필요해요');
+  const league = mode === 'league';
+  if ((selfplay || paired || league) && !$('in-resume').value) {
+    return alert('셀프플레이/paired/리그전은 resume from 체크포인트가 필요해요');
+  }
   const body = {
     timesteps: parseInt($('in-timesteps').value, 10),
     resume_from: $('in-resume').value || null,
     out: $('in-out').value || undefined,
     selfplay,
     paired,
+    league,
+    rounds: league ? parseInt($('in-rounds').value, 10) : undefined,
     refresh_interval: selfplay ? parseInt($('in-refresh').value, 10) : undefined,
     ent_coef: (selfplay || paired) && $('in-entcoef').value ? parseFloat($('in-entcoef').value) : undefined,
   };
@@ -283,6 +330,59 @@ $('btn-watch-stop').addEventListener('click', async () => {
 });
 
 $('btn-refresh-ckpt').addEventListener('click', refreshCheckpoints);
+
+const END_REASON_LABELS = {
+  a_down_timeout: 'A 다운타임아웃', b_down_timeout: 'B 다운타임아웃',
+  a_ko: 'A KO', b_ko: 'B KO', mutual_fall: '동시 낙상', truncated: '시간 초과(무승부)',
+};
+
+function renderMatchupResult(r) {
+  const el = $('matchup-results');
+  el.style.display = 'block';
+  const total = r.episodes;
+  const rows = Object.entries(r.end_reason_counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<tr><td>${END_REASON_LABELS[k] || k}</td><td>${v}</td><td>${(100 * v / total).toFixed(1)}%</td></tr>`)
+    .join('');
+  el.innerHTML = `
+    <div class="metrics">
+      <div class="metric"><div class="label">A 패배 (다운+KO)</div><div class="value">${r.a_losses} / ${total}</div></div>
+      <div class="metric"><div class="label">B 패배 (다운+KO)</div><div class="value">${r.b_losses} / ${total}</div></div>
+      <div class="metric"><div class="label">평균 에피소드 길이</div><div class="value">${r.mean_length.toFixed(0)} steps</div></div>
+      <div class="metric"><div class="label">종료 시 평균 체력 (A / B)</div><div class="value">${r.mean_health_a_end.toFixed(0)} / ${r.mean_health_b_end.toFixed(0)}</div></div>
+    </div>
+    <table class="matchup-table">
+      <thead><tr><th>종료 사유</th><th>횟수</th><th>비율</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+$('btn-matchup-run').addEventListener('click', async () => {
+  const a = $('in-matchup-a').value;
+  const b = $('in-matchup-b').value;
+  if (!a || !b) return alert('Fighter A / B 체크포인트를 둘 다 선택하세요');
+  const episodes = parseInt($('in-matchup-episodes').value, 10) || 60;
+  $('btn-matchup-run').disabled = true;
+  $('matchup-results').style.display = 'none';
+  $('matchup-status').textContent = `측정 중... (${episodes}판, 최대 몇십 초 걸릴 수 있어요)`;
+  try {
+    const r = await api('/api/matchup', {
+      method: 'POST',
+      body: JSON.stringify({ checkpoint_a: a, checkpoint_b: b, episodes }),
+    });
+    if (r.error) {
+      $('matchup-status').textContent = '에러: ' + r.error;
+    } else {
+      $('matchup-status').textContent = '완료';
+      renderMatchupResult(r);
+    }
+  } catch (e) {
+    $('matchup-status').textContent = '요청 실패: ' + e;
+  } finally {
+    $('btn-matchup-run').disabled = false;
+  }
+});
 
 function resizeCanvas(canvas) {
   const dpr = window.devicePixelRatio || 1;
@@ -372,16 +472,21 @@ function drawChart(name, points) {
   ctx.clearRect(0, 0, w, h);
   const pad = 34;
 
-  points = points.map(p => {
-    const q = { ...p };
+  // total_timesteps isn't reliably monotonic across the whole log file -- e.g. the
+  // league loop appends P1's and P2's separate runs into one log, and each restarts
+  // its own step counter, so plotting by raw total_timesteps would zigzag back and
+  // forth and look like extra phantom lines. Point INDEX is always monotonic, so
+  // position by that instead; total_timesteps is kept only for the axis text labels.
+  points = points.map((p, i) => {
+    const q = { ...p, _idx: i };
     ALWAYS_NEGATIVE_KEYS.forEach(k => { if (q[k] !== undefined) q[k] = -q[k]; });
     return q;
   });
 
-  const xs = points.map(p => p.total_timesteps);
+  const ts = points.map(p => p.total_timesteps);
   const ys = [];
   points.forEach(p => series.forEach(k => { if (p[k] !== undefined) ys.push(p[k]); }));
-  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  const xMin = 0, xMax = points.length - 1;
   const yMin = Math.min(...ys), yMax = Math.max(...ys);
 
   ctx.strokeStyle = '#2a2f3a';
@@ -395,12 +500,12 @@ function drawChart(name, points) {
     const val = yMax - (yMax - yMin) * (i / rows);
     ctx.fillText(Math.round(val).toLocaleString(), 4, y + 3);
   }
-  ctx.fillText(xMin.toLocaleString(), pad, h - 6);
-  const xMaxLabel = xMax.toLocaleString();
+  ctx.fillText('steps~' + ts[0].toLocaleString(), pad, h - 6);
+  const xMaxLabel = 'steps~' + ts[ts.length - 1].toLocaleString();
   ctx.fillText(xMaxLabel, w - 8 - ctx.measureText(xMaxLabel).width, h - 6);
 
   series.forEach(key => {
-    drawLine(ctx, points, 'total_timesteps', key, xMin, xMax, yMin, yMax, w, h, pad, METRIC_COLORS[key] || '#8b93a3');
+    drawLine(ctx, points, '_idx', key, xMin, xMax, yMin, yMax, w, h, pad, METRIC_COLORS[key] || '#8b93a3');
   });
 }
 
