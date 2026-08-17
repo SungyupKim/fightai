@@ -89,6 +89,21 @@ def parse_log_history(path, n_bytes=3_000_000, max_points=300):
     return points
 
 
+def _ckpt_role(name):
+    # league checkpoints are named ppo_p1_*/ppo_p2_*[_bootstrap]_* -- P1 was only ever
+    # trained controlling 'a' natively, P2 only ever controlling 'b' via the mirrored
+    # pathway, and (per this session's root-cause finding) the two are NOT
+    # interchangeable. Anything else (scratch/selfplay/vs_scripted/...) predates the
+    # league split and was only ever trained playing 'a' -- fine for the A slot, but
+    # untested/likely-weak in the B slot.
+    tokens = re.split(r"[_/.]", name)
+    if "p2" in tokens:
+        return "P2"
+    if "p1" in tokens:
+        return "P1"
+    return "공용"
+
+
 def list_checkpoints():
     # selfplay_opponent_*.zip is an internal working copy the training loop overwrites
     # every refresh -- not a meaningful standalone checkpoint, so keep it out of the list
@@ -101,11 +116,14 @@ def list_checkpoints():
     # merged and sorted newest-first across both top-level and autosave, so index 0
     # is always the single most recent checkpoint regardless of which dir it's in
     entries.sort(key=lambda e: e[2], reverse=True)
-    return [{"label": label, "path": str(p), "mtime": mtime} for p, label, mtime in entries]
+    return [{"label": label, "path": str(p), "mtime": mtime, "role": _ckpt_role(label)}
+            for p, label, mtime in entries]
 
 
-def paginate_checkpoints(page, page_size):
+def paginate_checkpoints(page, page_size, role=None):
     all_ckpts = list_checkpoints()
+    if role and role != "all":
+        all_ckpts = [c for c in all_ckpts if c["role"] == role]
     total = len(all_ckpts)
     page_size = min(max(page_size, 1), 200)
     total_pages = max(1, -(-total // page_size))  # ceil div
@@ -140,7 +158,8 @@ class Handler(BaseHTTPRequestHandler):
                 page_size = int(qs.get("page_size", ["20"])[0])
             except ValueError:
                 return self._json({"error": "invalid page/page_size"}, 400)
-            self._json(paginate_checkpoints(page, page_size))
+            role = qs.get("role", [None])[0]
+            self._json(paginate_checkpoints(page, page_size, role))
         elif path == "/api/history":
             log = latest_log()
             self._json({
@@ -277,20 +296,28 @@ class Handler(BaseHTTPRequestHandler):
             checkpoint = ckpts[0]["path"] if ckpts else None
         if not checkpoint or not pathlib.Path(checkpoint).is_file():
             return self._json({"error": "valid checkpoint path required"}, 400)
+        # 'opponent' is a separate checkpoint driving 'b' (e.g. a P2 league checkpoint) --
+        # pass the same path as checkpoint for a self-play mirror match, or omit for the
+        # scripted opponent. Using a single shared checkpoint for both sides only makes
+        # sense for pre-league checkpoints; P1/P2 league checkpoints are NOT
+        # interchangeable (see docs/기술문서 on the a/b asymmetry).
+        opponent = payload.get("opponent") or None
+        if opponent and not pathlib.Path(opponent).is_file():
+            return self._json({"error": "opponent checkpoint not found"}, 400)
         time.sleep(0.3)
         log_path = CKPT / "watch_dashboard.log"
         env = dict(os.environ)
         env.setdefault("DISPLAY", ":0")
         cmd = [str(VENV_PY), "watch.py", checkpoint]
-        if payload.get("mirror"):
-            cmd += ["--opponent", checkpoint]
+        if opponent:
+            cmd += ["--opponent", opponent]
         with open(log_path, "wb") as logf:
             subprocess.Popen(
                 cmd, cwd=str(SCRIPTS),
                 stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                 start_new_session=True, env=env,
             )
-        self._json({"started": True, "checkpoint": checkpoint})
+        self._json({"started": True, "checkpoint": checkpoint, "opponent": opponent})
 
     def _watch_stop(self, _payload):
         pids = pids_matching(WATCH_PATTERN)

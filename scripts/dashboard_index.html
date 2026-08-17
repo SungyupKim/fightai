@@ -34,6 +34,7 @@
     width: 100%; padding: 8px 10px; background: #0f1115; border: 1px solid var(--border);
     border-radius: 6px; color: var(--text); font-size: 13px;
   }
+  select.role-filter { font-size: 11px; padding: 5px 8px; margin-bottom: 6px; color: var(--muted); }
   button {
     margin-top: 14px; padding: 9px 14px; border-radius: 6px; border: none;
     background: var(--accent); color: white; font-size: 13px; cursor: pointer; font-weight: 500;
@@ -133,14 +134,26 @@
       <h2>뷰어 (격투 확인)</h2>
       <div class="status-row"><div id="watch-dot" class="dot"></div><strong id="watch-state">확인 중...</strong></div>
 
-      <label>체크포인트 선택</label>
+      <label>Fighter A (왼쪽 역할) 체크포인트</label>
+      <select id="in-watch-checkpoint-role" class="role-filter">
+        <option value="all">전체</option>
+        <option value="P1">P1만</option>
+        <option value="P2">P2만</option>
+        <option value="공용">공용만 (구버전, a만 학습됨)</option>
+      </select>
       <select id="in-watch-checkpoint"></select>
       <div class="pager" id="pager-watch"></div>
 
-      <label style="display:flex; align-items:center; gap:8px; margin-top:14px;">
-        <input id="in-watch-mirror" type="checkbox" checked style="width:auto;">
-        <span style="margin:0;">미러 매치 (같은 체크포인트로 셀프플레이 대전)</span>
-      </label>
+      <label style="margin-top:14px;">Fighter B (오른쪽 역할, 상대) 체크포인트</label>
+      <select id="in-watch-opponent-role" class="role-filter">
+        <option value="P2" selected>P2만 (권장 -- b 역할로 학습됨)</option>
+        <option value="all">전체</option>
+        <option value="P1">P1만</option>
+        <option value="공용">공용만 (구버전, a만 학습됨)</option>
+      </select>
+      <select id="in-watch-opponent"></select>
+      <div class="pager" id="pager-watch-opponent"></div>
+      <button id="btn-watch-mirror" class="secondary" type="button" style="margin-top:6px;">A와 동일하게 (미러 매치)</button>
 
       <div>
         <button id="btn-watch-latest">최신 스냅샷 보기</button>
@@ -171,11 +184,23 @@
       <div style="display:flex; gap:16px; flex-wrap:wrap;">
         <div style="flex:1; min-width:220px;">
           <label>Fighter A (왼쪽 역할)</label>
+          <select id="in-matchup-a-role" class="role-filter">
+            <option value="all">전체</option>
+            <option value="P1">P1만</option>
+            <option value="P2">P2만</option>
+            <option value="공용">공용만 (구버전, a만 학습됨)</option>
+          </select>
           <select id="in-matchup-a"></select>
           <div class="pager" id="pager-matchup-a"></div>
         </div>
         <div style="flex:1; min-width:220px;">
           <label>Fighter B (오른쪽 역할)</label>
+          <select id="in-matchup-b-role" class="role-filter">
+            <option value="P2" selected>P2만 (권장 -- b 역할로 학습됨)</option>
+            <option value="all">전체</option>
+            <option value="P1">P1만</option>
+            <option value="공용">공용만 (구버전, a만 학습됨)</option>
+          </select>
           <select id="in-matchup-b"></select>
           <div class="pager" id="pager-matchup-b"></div>
         </div>
@@ -227,13 +252,15 @@ const CKPT_PAGE_SIZE = 20;
 // (backend sorts newest-first), so opening either picker lands on the latest by default
 const ckptPickers = {
   resume: { page: 1, selectId: 'in-resume', pagerId: 'pager-resume', placeholder: '-- 처음부터 새로 --' },
-  watch: { page: 1, selectId: 'in-watch-checkpoint', pagerId: 'pager-watch', placeholder: null },
-  matchupA: { page: 1, selectId: 'in-matchup-a', pagerId: 'pager-matchup-a', placeholder: null },
-  matchupB: { page: 1, selectId: 'in-matchup-b', pagerId: 'pager-matchup-b', placeholder: null },
+  watch: { page: 1, selectId: 'in-watch-checkpoint', pagerId: 'pager-watch', placeholder: null, roleSelectId: 'in-watch-checkpoint-role' },
+  watchOpponent: { page: 1, selectId: 'in-watch-opponent', pagerId: 'pager-watch-opponent', placeholder: '-- 스크립트 상대 --', roleSelectId: 'in-watch-opponent-role' },
+  matchupA: { page: 1, selectId: 'in-matchup-a', pagerId: 'pager-matchup-a', placeholder: null, roleSelectId: 'in-matchup-a-role' },
+  matchupB: { page: 1, selectId: 'in-matchup-b', pagerId: 'pager-matchup-b', placeholder: null, roleSelectId: 'in-matchup-b-role' },
 };
 
 async function loadCheckpointPage(picker) {
-  const data = await api(`/api/checkpoints?page=${picker.page}&page_size=${CKPT_PAGE_SIZE}`);
+  const role = picker.roleSelectId ? $(picker.roleSelectId).value : 'all';
+  const data = await api(`/api/checkpoints?page=${picker.page}&page_size=${CKPT_PAGE_SIZE}&role=${role}`);
   picker.page = data.page; // server clamps out-of-range pages, stay in sync
   const sel = $(picker.selectId);
   const prev = sel.value;
@@ -245,7 +272,7 @@ async function loadCheckpointPage(picker) {
   }
   for (const c of data.checkpoints) {
     const o = document.createElement('option');
-    o.value = c.path; o.textContent = c.label;
+    o.value = c.path; o.textContent = `[${c.role}] ${c.label}`;
     sel.appendChild(o);
   }
   if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
@@ -270,6 +297,14 @@ async function loadCheckpointPage(picker) {
 
 function refreshCheckpoints() {
   return Promise.all(Object.values(ckptPickers).map(loadCheckpointPage));
+}
+
+for (const picker of Object.values(ckptPickers)) {
+  if (!picker.roleSelectId) continue;
+  $(picker.roleSelectId).addEventListener('change', () => {
+    picker.page = 1;
+    loadCheckpointPage(picker);
+  });
 }
 
 function trainMode() {
@@ -318,8 +353,8 @@ $('btn-train-stop').addEventListener('click', async () => {
 });
 
 async function startWatch(checkpoint) {
-  const mirror = $('in-watch-mirror').checked;
-  const r = await api('/api/watch/start', { method: 'POST', body: JSON.stringify({ checkpoint, mirror }) });
+  const opponent = $('in-watch-opponent').value || undefined;
+  const r = await api('/api/watch/start', { method: 'POST', body: JSON.stringify({ checkpoint, opponent }) });
   if (r.error) alert(r.error);
   refreshStatus();
 }
@@ -331,6 +366,22 @@ $('btn-watch-start').addEventListener('click', () => {
 });
 
 $('btn-watch-latest').addEventListener('click', () => startWatch('__latest__'));
+
+$('btn-watch-mirror').addEventListener('click', async () => {
+  const a = $('in-watch-checkpoint').value;
+  if (!a) return alert('먼저 Fighter A 체크포인트를 선택하세요');
+  // B is filtered to P2 by default, which A's checkpoint (often P1/공용) won't be in --
+  // switch B's filter to 전체 so the mirror match can actually find it.
+  $('in-watch-opponent-role').value = 'all';
+  const picker = ckptPickers.watchOpponent;
+  picker.page = 1;
+  await loadCheckpointPage(picker);
+  if ([...$('in-watch-opponent').options].some(o => o.value === a)) {
+    $('in-watch-opponent').value = a;
+  } else {
+    alert('상대 목록에서 A와 같은 체크포인트를 못 찾았어요 -- 페이지를 넘겨서 직접 골라주세요');
+  }
+});
 
 $('btn-watch-stop').addEventListener('click', async () => {
   await api('/api/watch/stop', { method: 'POST' });
