@@ -569,3 +569,39 @@ class Fighter2DEnv(gym.Env):
         if self._viewer is not None:
             self._viewer.close()
             self._viewer = None
+
+
+class Fighter2DEnvForB(Fighter2DEnv):
+    """Same physics/reward as Fighter2DEnv, but the RL action space controls 'b'
+    instead of 'a' -- 'a' becomes the frozen opponent (loaded via set_opponent(),
+    inherited unchanged from the base class). This trains a policy with DIRECT
+    gradient exposure to playing from b's mirrored frame, instead of relying on a
+    single shared policy to generalize there via _obs_for_b() alone -- see
+    docs/기술문서 section 4: forcing the same weights to handle both frames measurably
+    kept producing a persistent a/b asymmetry (self-play, mirror augmentation, paired
+    self-play, and even a provably mirror-equivariant policy all failed to fully fix
+    it). Training two independently-specialized policies, alternating which one is
+    frozen each round (see selfplay_league_loop.sh), sidesteps the generalization
+    problem entirely -- each side only ever needs to be good at its own role."""
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed, options=options)
+        return self._obs_for_b(), {}
+
+    def step(self, action):
+        action = np.clip(action, -1.0, 1.0)
+        if self.opponent_policy is None:
+            raise RuntimeError("Fighter2DEnvForB requires a frozen 'a' opponent -- call set_opponent() first")
+        a_action, _ = self.opponent_policy.predict(self._obs(), deterministic=False)
+        a_action = np.clip(a_action, -1.0, 1.0)
+        _, reward_a, terminated, truncated, info = super().step(a_action, b_full_action=action)
+        obs_b = self._obs_for_b()
+        reward_b = info["reward_b"]
+        info_b = {
+            "health_a": info["health_a"], "health_b": info["health_b"],
+            "stagger_a": info["stagger_a"], "stagger_b": info["stagger_b"],
+            "reward_breakdown": info["reward_breakdown_b"],
+            "reward_b": reward_a,  # the frozen opponent's score, for the same
+            # "am I outplaying my own recent past" logging OpponentRewardCallback does
+        }
+        return obs_b, reward_b, terminated, truncated, info_b

@@ -19,7 +19,7 @@ VENV_PY = ROOT / ".venv" / "bin" / "python"
 
 CKPT.mkdir(exist_ok=True)
 
-TRAIN_PATTERN = r"train(_selfplay(_paired)?)?\.py --timesteps"
+TRAIN_PATTERN = r"train(_selfplay(_paired)?|_equivariant|_league)?\.py --|selfplay_league_loop\.sh"
 WATCH_PATTERN = r"watch\.py"
 BREAKDOWN_KEYS = ["r_strike", "r_effort", "r_jerk", "r_engage", "r_down", "r_knockdown_entry", "r_balance", "r_ground", "r_knee", "r_terminal"]
 ROLLOUT_KEYS = ["total_timesteps", "ep_rew_mean", "b_ep_rew_mean", "ep_len_mean", "fps"] + BREAKDOWN_KEYS
@@ -163,6 +163,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/train/stop": self._train_stop,
             "/api/watch/start": self._watch_start,
             "/api/watch/stop": self._watch_stop,
+            "/api/matchup": self._matchup,
         }
         fn = routes.get(self.path)
         if fn is None:
@@ -206,7 +207,17 @@ class Handler(BaseHTTPRequestHandler):
 
         selfplay = bool(payload.get("selfplay"))
         paired = bool(payload.get("paired"))
-        if paired:
+        league = bool(payload.get("league"))
+        if league:
+            if not resume_from:
+                return self._json({"error": "league needs a checkpoint to bootstrap P1 and P2 from"}, 400)
+            try:
+                rounds = str(int(payload.get("rounds", 20)))
+            except (TypeError, ValueError):
+                return self._json({"error": "invalid rounds"}, 400)
+            log_path = CKPT / "league_loop_dashboard.log"
+            cmd = ["bash", "selfplay_league_loop.sh", rounds, timesteps, resume_from, resume_from]
+        elif paired:
             if not resume_from:
                 return self._json({"error": "paired self-play needs a checkpoint to bootstrap from"}, 400)
             log_path = CKPT / "train_paired_dashboard.log"
@@ -281,6 +292,33 @@ class Handler(BaseHTTPRequestHandler):
         for pid in pids:
             subprocess.run(["kill", pid])
         self._json({"stopped": pids})
+
+    def _matchup(self, payload):
+        ckpt_a = payload.get("checkpoint_a")
+        ckpt_b = payload.get("checkpoint_b")
+        if not ckpt_a or not pathlib.Path(ckpt_a).is_file():
+            return self._json({"error": "checkpoint_a not found"}, 400)
+        if not ckpt_b or not pathlib.Path(ckpt_b).is_file():
+            return self._json({"error": "checkpoint_b not found"}, 400)
+        try:
+            episodes = min(max(int(payload.get("episodes", 60)), 5), 300)
+        except (TypeError, ValueError):
+            return self._json({"error": "invalid episodes"}, 400)
+
+        try:
+            out = subprocess.run(
+                [str(VENV_PY), "matchup_eval.py", ckpt_a, ckpt_b, "--episodes", str(episodes)],
+                cwd=str(SCRIPTS), capture_output=True, text=True, timeout=300,
+            )
+        except subprocess.TimeoutExpired:
+            return self._json({"error": "matchup evaluation timed out (300s)"}, 504)
+        if out.returncode != 0:
+            return self._json({"error": "matchup evaluation failed", "detail": out.stderr[-2000:]}, 500)
+        try:
+            result = json.loads(out.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return self._json({"error": "could not parse matchup output", "detail": out.stdout[-2000:]}, 500)
+        self._json(result)
 
     def log_message(self, fmt, *args):
         pass
