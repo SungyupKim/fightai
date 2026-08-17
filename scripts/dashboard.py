@@ -206,8 +206,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "resume_from checkpoint not found"}, 400)
 
         selfplay = bool(payload.get("selfplay"))
-        paired = bool(payload.get("paired"))
         league = bool(payload.get("league"))
+        league_dynamic = bool(payload.get("league_dynamic"))
         if league:
             if not resume_from:
                 return self._json({"error": "league needs a checkpoint to bootstrap P1 and P2 from"}, 400)
@@ -215,20 +215,25 @@ class Handler(BaseHTTPRequestHandler):
                 rounds = str(int(payload.get("rounds", 20)))
             except (TypeError, ValueError):
                 return self._json({"error": "invalid rounds"}, 400)
-            log_path = CKPT / "league_loop_dashboard.log"
-            cmd = ["bash", "selfplay_league_loop.sh", rounds, timesteps, resume_from, resume_from]
-        elif paired:
-            if not resume_from:
-                return self._json({"error": "paired self-play needs a checkpoint to bootstrap from"}, 400)
-            log_path = CKPT / "train_paired_dashboard.log"
-            cmd = [str(VENV_PY), "train_selfplay_paired.py", "--timesteps", timesteps,
-                   "--out", out, "--init-from", resume_from]
-            try:
-                ent_coef = payload.get("ent_coef")
-                if ent_coef not in (None, ""):
-                    cmd += ["--ent-coef", str(float(ent_coef))]
-            except (TypeError, ValueError):
-                return self._json({"error": "invalid ent_coef"}, 400)
+            if league_dynamic:
+                # selfplay_league_dynamic.py writes its own canonical log directly to
+                # checkpoints/league_dynamic_loop.log regardless of what captures its
+                # stdout -- use a different path here so the two writers don't collide
+                # (matches the same hardcoded-internal-log pattern as the other loop
+                # scripts; latest_log() will pick up whichever file is newest either way)
+                log_path = CKPT / "league_dynamic_dashboard.log"
+                try:
+                    eval_episodes = str(int(payload.get("eval_episodes", 30)))
+                    margin = str(int(payload.get("margin", 3)))
+                except (TypeError, ValueError):
+                    return self._json({"error": "invalid eval_episodes/margin"}, 400)
+                cmd = [str(VENV_PY), "selfplay_league_dynamic.py",
+                       "--rounds", rounds, "--timesteps", timesteps,
+                       "--eval-episodes", eval_episodes, "--margin", margin,
+                       "--p1-init", resume_from, "--p2-init", resume_from]
+            else:
+                log_path = CKPT / "league_loop_dashboard.log"
+                cmd = ["bash", "selfplay_league_loop.sh", rounds, timesteps, resume_from, resume_from]
         elif selfplay:
             if not resume_from:
                 return self._json({"error": "self-play needs a checkpoint to bootstrap from"}, 400)

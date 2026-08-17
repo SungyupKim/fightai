@@ -127,6 +127,16 @@ STAGGER_NOISE_STD = 0.4        # extra action noise, scaled by stagger
 ARM_JOINTS = ["shoulder_r", "elbow_r", "shoulder_l", "elbow_l"]
 ARM_MIN_POWER = 0.4
 
+# same force-length curve for the legs: a diagnostic found both hips being driven to
+# ~+1.5 rad (near their +90 deg range limit) and getting stuck pinned there -- full
+# torque available even at the extreme let the policy slam the joint into its limit
+# and hold it there (torso folds forward at the hip, height drops below FALL_HEIGHT,
+# read as a "fall" even though root_ry/balance never actually went unstable). Tapering
+# power at the extremes, same as the arms already do, should make holding that pinned
+# position costlier than easing off.
+LEG_JOINTS = ["hip_r", "knee_r", "hip_l", "knee_l"]
+LEG_MIN_POWER = 0.4
+
 
 class Fighter2DEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
@@ -142,16 +152,18 @@ class Fighter2DEnv(gym.Env):
         self.a_act = np.array([self.model.actuator(f"a_{j}").id for j in JOINTS])
         self.b_act = np.array([self.model.actuator(f"b_{j}").id for j in JOINTS])
 
-        def arm_setup(prefix):
-            # positions within a_act/b_act (index into JOINTS) for the 4 arm joints,
+        def power_curve_setup(prefix, joints):
+            # positions within a_act/b_act (index into JOINTS) for this limb's joints,
             # plus each one's qpos address and [min, max] range for the power curve
-            act_idx = np.array([JOINTS.index(j) for j in ARM_JOINTS])
-            qpos_idx = np.array([self.model.joint(f"{prefix}{j}").qposadr[0] for j in ARM_JOINTS])
-            ranges = np.array([self.model.joint(f"{prefix}{j}").range for j in ARM_JOINTS])
+            act_idx = np.array([JOINTS.index(j) for j in joints])
+            qpos_idx = np.array([self.model.joint(f"{prefix}{j}").qposadr[0] for j in joints])
+            ranges = np.array([self.model.joint(f"{prefix}{j}").range for j in joints])
             return act_idx, qpos_idx, ranges
 
-        self.a_arm_act_idx, self.a_arm_qpos, self.a_arm_range = arm_setup("a_")
-        self.b_arm_act_idx, self.b_arm_qpos, self.b_arm_range = arm_setup("b_")
+        self.a_arm_act_idx, self.a_arm_qpos, self.a_arm_range = power_curve_setup("a_", ARM_JOINTS)
+        self.b_arm_act_idx, self.b_arm_qpos, self.b_arm_range = power_curve_setup("b_", ARM_JOINTS)
+        self.a_leg_act_idx, self.a_leg_qpos, self.a_leg_range = power_curve_setup("a_", LEG_JOINTS)
+        self.b_leg_act_idx, self.b_leg_qpos, self.b_leg_range = power_curve_setup("b_", LEG_JOINTS)
 
         self.a_root_act = self.model.actuator("a_root_x").id
         self.b_root_act = self.model.actuator("b_root_x").id
@@ -361,15 +373,15 @@ class Fighter2DEnv(gym.Env):
         self._t = 0.0
         return self._obs(), {}
 
-    def _arm_power_scale(self, qpos_idx, ranges):
-        """1.0 at the midpoint of each arm joint's range of motion, tapering down to
-        ARM_MIN_POWER at either extreme -- a crude stand-in for a muscle force-length
-        curve, so a fully outstretched or fully folded arm punches noticeably softer
+    def _power_scale(self, qpos_idx, ranges, min_power):
+        """1.0 at the midpoint of each joint's range of motion, tapering down to
+        min_power at either extreme -- a crude stand-in for a muscle force-length
+        curve, so a fully outstretched or fully folded limb pushes noticeably softer
         than one swinging through the middle of its range."""
         angles = self.data.qpos[qpos_idx]
         lo, hi = ranges[:, 0], ranges[:, 1]
         frac = np.clip((angles - lo) / (hi - lo), 0.0, 1.0)
-        return ARM_MIN_POWER + (1.0 - ARM_MIN_POWER) * np.sin(np.pi * frac)
+        return min_power + (1.0 - min_power) * np.sin(np.pi * frac)
 
     def step(self, action, b_full_action=None):
         """b_full_action: pass a real action (in b's own mirrored-frame convention, same
@@ -408,8 +420,10 @@ class Fighter2DEnv(gym.Env):
             b_noise = self.np_random.normal(0.0, STAGGER_NOISE_STD * self.stagger["b"], size=b_ctrl.shape)
             self.data.ctrl[self.a_act] = np.clip(a_joint_action * a_authority + a_noise, -1.0, 1.0)
             self.data.ctrl[self.b_act] = np.clip(b_ctrl * b_authority + b_noise, -1.0, 1.0)
-            self.data.ctrl[self.a_act[self.a_arm_act_idx]] *= self._arm_power_scale(self.a_arm_qpos, self.a_arm_range)
-            self.data.ctrl[self.b_act[self.b_arm_act_idx]] *= self._arm_power_scale(self.b_arm_qpos, self.b_arm_range)
+            self.data.ctrl[self.a_act[self.a_arm_act_idx]] *= self._power_scale(self.a_arm_qpos, self.a_arm_range, ARM_MIN_POWER)
+            self.data.ctrl[self.b_act[self.b_arm_act_idx]] *= self._power_scale(self.b_arm_qpos, self.b_arm_range, ARM_MIN_POWER)
+            self.data.ctrl[self.a_act[self.a_leg_act_idx]] *= self._power_scale(self.a_leg_qpos, self.a_leg_range, LEG_MIN_POWER)
+            self.data.ctrl[self.b_act[self.b_leg_act_idx]] *= self._power_scale(self.b_leg_qpos, self.b_leg_range, LEG_MIN_POWER)
 
             ax = self.data.xpos[self.a_torso_id][0]
             bx = self.data.xpos[self.b_torso_id][0]

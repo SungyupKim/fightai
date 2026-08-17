@@ -18,12 +18,26 @@ MODELS_DIR = SCRIPTS.parent / "checkpoints"
 VENV_PY = SCRIPTS.parent / ".venv" / "bin" / "python"
 LOG_PATH = MODELS_DIR / "league_dynamic_loop.log"
 
+try:
+    from kakao_notify import send_message
+except Exception:
+    send_message = None
+
 
 def log(msg):
     line = f"[dynamic] {msg}"
     print(line, flush=True)
     with open(LOG_PATH, "a") as f:
         f.write(line + "\n")
+
+
+def notify(msg):
+    if send_message is None:
+        return
+    try:
+        send_message(msg)
+    except Exception as e:
+        log(f"kakao notify failed: {e}")
 
 
 def latest_ckpt(prefix):
@@ -87,9 +101,15 @@ def main():
             train_side("b", p2, p1, args.timesteps, "ppo_p2")
             p2 = latest_ckpt("ppo_p2")
         last_trained = side
-        log(f"round {i}/{args.rounds}: side={side} done in {time.time() - t0:.0f}s -- P1={p1} P2={p2}")
+        elapsed = time.time() - t0
+        log(f"round {i}/{args.rounds}: side={side} done in {elapsed:.0f}s -- P1={p1} P2={p2}")
+        notify(
+            f"[fightai] round {i}/{args.rounds} done (trained {side}, {elapsed:.0f}s)\n"
+            f"matchup a_losses={a_losses} b_losses={b_losses} / {args.eval_episodes}"
+        )
 
     log(f"all {args.rounds} rounds complete. P1={p1} P2={p2}")
+    notify(f"[fightai] all {args.rounds} rounds complete. P1={p1} P2={p2}")
 
 
 if __name__ == "__main__":
