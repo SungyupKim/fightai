@@ -19,7 +19,7 @@ VENV_PY = ROOT / ".venv" / "bin" / "python"
 
 CKPT.mkdir(exist_ok=True)
 
-TRAIN_PATTERN = r"train(_selfplay(_paired)?|_equivariant|_league)?\.py --|selfplay_league_loop\.sh"
+TRAIN_PATTERN = r"train(_selfplay(_paired)?|_equivariant|_league)?\.py --|selfplay_league_(loop\.sh|dynamic\.py)"
 WATCH_PATTERN = r"watch\.py"
 BREAKDOWN_KEYS = ["r_strike", "r_effort", "r_jerk", "r_engage", "r_down", "r_knockdown_entry", "r_balance", "r_ground", "r_knee", "r_terminal"]
 ROLLOUT_KEYS = ["total_timesteps", "ep_rew_mean", "b_ep_rew_mean", "ep_len_mean", "fps"] + BREAKDOWN_KEYS
