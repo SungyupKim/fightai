@@ -46,12 +46,16 @@ TARGET_HEALTH_MULT = {"head": 1.6, "torso": 1.0, "leg": 0.5}   # HP damage multi
 HEAD_REWARD_BONUS = 1.5        # extra reward-only multiplier for landing headshots, on top of HP mult
 KICK_REWARD_BONUS = 2.0        # extra reward-only multiplier for shin-landed damage, to outweigh the
                                 # balance risk of committing a leg instead of just punching
-DAMAGE_REWARD_SCALE = 1.0      # raised again (0.35 -> 0.7 -> 1.0, back to unscaled). The 0.7 attempt
-                                # looked like it hurt contact frequency, but we later found "no contact"
-                                # episodes are ~80% actually self-destabilized falls before ever closing
-                                # the distance, not a lack of aggression -- so that read was confounded.
-                                # Worth pushing scoring weight further now that it's better isolated.
-                                # (does not affect actual HP loss, reward-only)
+DAMAGE_REWARD_SCALE = 3.0      # 0.35 -> 0.7 -> 1.0 -> 3.0 -> 5.0 -> back to 3.0 -> 10.0 -> 5.0 ->
+                                # back to 3.0. Both 5.0 (scratch28) and 10.0 (scratch27) got kicks
+                                # landing (0->15/0->36 contacts per 6000 steps) but the adversarial
+                                # fall rate jumped to ~37-40% at BOTH scales (vs 3.0's ~23%) -- a
+                                # cliff, not a gradual tradeoff -- while engagement/posture degraded
+                                # more gradually with scale. No usable middle ground found; reverted
+                                # to 3.0 (scratch23) as the league base. If kicks are worth chasing
+                                # again, prefer raising KICK_REWARD_BONUS specifically over this
+                                # scale, so punches don't get swept up too. Reward-only scale,
+                                # doesn't change actual HP loss per hit (that's FORCE_TO_DAMAGE).
 
 # ---- movement / control shaping ----
 EFFORT_COST = 0.01             # back to the original value. Raised in steps (0.01 -> 0.05 -> 0.15)
@@ -62,9 +66,21 @@ EFFORT_COST = 0.01             # back to the original value. Raised in steps (0.
                                 # actual combat signal, so reverting rather than tuning it further.
 JERK_PENALTY_SCALE = 0.02      # cost on action change frame-to-frame, discourages full-power reversals
                                 # (e.g. root thrust +1 -> -1 in one step)
-ENGAGE_PENALTY_SCALE = 0.3     # cost on log1p(foot distance) every step -- always some gradient to
+ENGAGE_PENALTY_SCALE = 0.5     # cost on log1p(foot distance) every step -- always some gradient to
                                 # close in (no free zone), steepest near contact range and flattening
-                                # out at long range
+                                # out at long range. Was 0.3 -> 5.0 -> 2.0, tuning this scale alone kept
+                                # trading falls for engagement and back (2.0 was still 60% falls vs the
+                                # 33% balance-only baseline). Spawn distance (build_model.py) was cut
+                                # from 1.8 to 1.2 instead -- less ground to cover, so backed the scale
+                                # back down too rather than stacking both fixes at full strength.
+PROGRESS_REWARD_SCALE = 2.0    # bonus for REDUCING foot_dist this step (previous - current), on top
+                                # of engage_penalty's static "how far apart are we" cost. Standing
+                                # still and not falling only slowly loses under engage_penalty alone
+                                # (confirmed: reward fell from 114->50 over training at a large spawn
+                                # distance as episodes got longer without closing in) -- this gives a
+                                # direct, immediate signal for the ACT of closing distance, meant to
+                                # help a distance curriculum (build_model.py) actually learn each step
+                                # up instead of just tolerating the larger static cost.
 B_APPROACH_GAIN = 1.5          # scripted opponent's proportional gain for walking toward 'a'
 
 A_MIRROR_AUGMENT_PROB = 0.5    # fraction of episodes where 'a's own observation/action is routed
@@ -82,15 +98,6 @@ A_MIRROR_AUGMENT_PROB = 0.5    # fraction of episodes where 'a's own observation
                                 # view/action during training gives the mirrored frame direct gradient
                                 # exposure instead of leaving it entirely unoptimized.
 
-# ---- ground contact (footwork / collapse) ----
-# rewards keeping feet planted (a wider base of support is more stable) and penalizes a knee
-# touching the ground (a sign of the leg buckling/collapsing, distinct from a controlled kick
-# where the foot lifts but the knee doesn't drop). Both are signed a-vs-b terms like down/balance,
-# so they're ~0 (no signal) whenever both fighters are equally grounded -- the common case -- and
-# only kick in when there's an actual gap, rather than taxing every step regardless of relevance.
-GROUND_CONTACT_SCALE = 1.0     # per-step, scaled by fraction of feet planted (0 / 0.5 / 1.0 each side)
-KNEE_CONTACT_PENALTY = 15.0    # per-step, per knee touching the ground -- meant to be rare, like
-                                # BALANCE_PENALTY_SCALE, so scaled higher than the ever-present terms
 
 # ---- balance assist (physics, not reward) ----
 # root_ry (torso pitch) has no RL-controlled actuator; a small always-on PD assist drives it back
@@ -110,7 +117,86 @@ BALANCE_KD = 10.0
 # trap EFFORT_COST fell into. Squared beyond the free zone so it escalates sharply as a real fall
 # approaches (measured tail: p99 ~0.28 rad, max ~0.81 rad) rather than a gentle linear slope.
 BALANCE_FREE_ZONE = 0.15       # rad (~8.6 deg); no penalty for lean within this range
-BALANCE_PENALTY_SCALE = 100.0
+BALANCE_PENALTY_SCALE = 1000.0  # was 100 -> 300 -> 600 -> 1000 -- 600 got real matches (P1 vs a
+# dedicated P2) down to a fairer ~50:50 split, but still falls in roughly half of all
+# episodes by eye, so raised again (still squared beyond BALANCE_FREE_ZONE, so normal
+# standing wobble is untaxed)
+
+# Tried gating root_x thrust efficiency by leg extension (skeleton-sled-style moment-of-inertia
+# argument) to fight the crouch/"sitting" exploit, before the head-height reward existed. Removed
+# once the height reward solved that cleanly on its own (0% crouching in scratch23) -- the gate's
+# average-both-knees formula was an unintended tax on kicking too (bending one leg to kick pulled
+# the average down and cost mobility), and measured kick contacts were 0/3000 steps with it in
+# place vs 345 punch contacts in the same sample.
+
+# Direct height PENALTY was tried 3x (uncapped, capped-through-fall, zeroed-at-fall then scaled
+# up) and abandoned -- the "recover from a knockdown" process (up to DOWN_RECOVERY_STEPS)
+# necessarily passes back UP through the same z-height range a penalty-below-a-threshold approach
+# taxes, so it can't distinguish "legitimately standing back up" from "ducking as a balance-
+# avoidance exploit". Scaling it enough to fight the crouch exploit also punishes every real
+# recovery attempt and destabilizes training (ep_rew_mean collapsed to -13,000, -7,500, then
+# -113,000 at higher scales). A pure REWARD for height instead -- always >= 0, accelerating
+# (squared) as head height approaches standing -- has no cliff/threshold to double-count against:
+# a knockdown recovery just earns less bonus while still low, never an escalating penalty, so it
+# can be tuned aggressively without the same blowup risk.
+STANDING_HEAD_HEIGHT = 1.29     # a_head z at spawn, standing straight
+HEAD_HEIGHT_REWARD_SCALE = 3.0
+# Uncapped ratio rewarded stretching taller than standing forever -- "maximally rigid/tall" was
+# strictly better than a natural, slightly-bent ready stance, since more height always meant more
+# reward. Capping the ratio at 1.0 makes reaching normal standing height the ceiling; the downward
+# gradient (recover from a knockdown) is unaffected, only the "stretch past normal" incentive is
+# removed.
+HEAD_HEIGHT_RATIO_CAP = 1.0
+
+# Stability bonus -- originally keyed on |root_ry angular velocity| (how fast the torso is
+# tipping), but a direct measurement of 22 fall events (docs 10.7) showed 0/22 were rotational
+# tipping: |root_ry| stayed ~0.02-0.05 rad (near zero) all the way to the fall, while torso z
+# dropped ~0.16m in the same window. root_z has NO actuator (pure slide joint, build_model.py) --
+# it's a passive consequence of the legs' ground reaction force, so once support fails the torso
+# just sinks straight down with no direct way for the policy to arrest it via root_ry. So an
+# ry-velocity-based bonus was measuring the wrong axis entirely and (correctly) had zero effect on
+# fall rate across 79 rounds. Rewritten to reward low DOWNWARD root_z velocity instead -- the
+# actual signature of an in-progress collapse. Measured on a real checkpoint: normal
+# standing/bobbing has downward z-vel median~0.035, p90~0.26 m/s; real falls spike to ~1.5-2.7.
+# Z_VEL_REF=1.0 gives normal movement a strong partial bonus while an in-progress fast collapse
+# gets ~0 (only penalizes downward speed, not upward/jumping motion). Always >= 0, same
+# cliff-free shape as height reward. Scale kept modest like before (per-episode magnitude checked
+# against strike before training -- see docs 9.8/10.3 for why that matters).
+STABILITY_REWARD_SCALE = 0.15
+Z_VEL_REF = 1.0
+
+# The z-velocity stability bonus above didn't move the needle on fall rate over a full 100-round
+# run (stayed flat ~68%, docs 10.8) -- the reward target was right (docs 10.7) but root_z has no
+# actuator, so the only lever the policy has is indirect (hip/knee -> ground reaction force).
+# Trying a more direct lever: reward a wider front-back stance (the only kind of "wide base" this
+# sagittal-plane-only biped can form -- see docs 10.2, legs can't spread sideways, only stagger
+# fore/aft), on the theory that a bigger base of support gives more margin before ground reaction
+# fails and root_z starts free-falling. Measured foot x-gap on a real checkpoint: median~0.025m
+# (feet together most of the time), p90~0.68m (only during kicks/punches, not sustained). Capped
+# at ratio 1.0 like height, so it stops rewarding past a normal stance width instead of pushing
+# toward an ever-wider (eventually anatomically absurd) split.
+STANCE_REWARD_SCALE = 0.15
+STANCE_GAP_REF = 0.4
+
+# Reward for keeping knees off the ground. First version used the existing contact-based
+# knees_down count (0/1/2, from _leg_ground_contacts) -- but that's a binary post-hoc signal: it
+# only fires at the instant of contact, giving no gradient warning beforehand the way height/
+# stability do. Switched to a continuous proxy instead: each knee joint's own world-frame height
+# above the floor (xanchor z), same cliff-free capped-ratio shape as height reward, so the bonus
+# smoothly fades as a knee sinks toward the ground well before it actually touches. Measured
+# normal standing/moving min-knee-height on a real checkpoint: median~0.41m, occasionally
+# dipping to ~0.07m during kicks (not a problem, that's brief); KNEE_HEIGHT_REF=0.4 puts normal
+# stance near the ratio-1 ceiling. Uses the MINIMUM of the two knees (not the average) so one
+# knee sinking can't be masked by the other staying up -- matches the visual "kneeling" cue,
+# where even one knee down is the thing to avoid.
+KNEE_AVOID_SCALE = 0.15
+KNEE_HEIGHT_REF = 0.4
+
+# Tried a flat per-step "alive cost" to break passive standoffs (nothing in strike/engage/
+# progress/height pushes toward actually attacking once already close). Both scales tried (0.1,
+# 0.03) made things worse, not better -- engagement dropped (66.7% -> 56.7% -> 43.3%) and height
+# fell back toward the crouch (0.92 -> 0.62 -> 0.56) instead of improving. Reverted; passive
+# standoffs are a known open issue.
 
 # ---- stagger (posture loss from leg damage) ----
 # reduces control authority + adds control noise for the staggered fighter, so losing your legs
@@ -136,6 +222,11 @@ ARM_MIN_POWER = 0.4
 # position costlier than easing off.
 LEG_JOINTS = ["hip_r", "knee_r", "hip_l", "knee_l"]
 LEG_MIN_POWER = 0.4
+
+# Tried gating root_x thrust by leg stride split (force stepping instead of a free torso
+# slide) -- measured it actually made the vs-scripted-bot fall rate WORSE (43% -> 57%,
+# regressing back to pre-balance-penalty levels), likely because the required leg split
+# fights the balance penalty's incentive to stay upright/symmetric. Reverted.
 
 
 class Fighter2DEnv(gym.Env):
@@ -173,6 +264,12 @@ class Fighter2DEnv(gym.Env):
         self.a_ry_dof = self.model.joint("a_root_ry").dofadr[0]
         self.b_ry_qpos = self.model.joint("b_root_ry").qposadr[0]
         self.b_ry_dof = self.model.joint("b_root_ry").dofadr[0]
+        self.a_z_dof = self.model.joint("a_root_z").dofadr[0]
+        self.b_z_dof = self.model.joint("b_root_z").dofadr[0]
+        self.a_knee_r_id = self.model.joint("a_knee_r").id
+        self.a_knee_l_id = self.model.joint("a_knee_l").id
+        self.b_knee_r_id = self.model.joint("b_knee_r").id
+        self.b_knee_l_id = self.model.joint("b_knee_l").id
         self.a_feet = [self.model.site("a_foot_r").id, self.model.site("a_foot_l").id]
         self.b_feet = [self.model.site("b_foot_r").id, self.model.site("b_foot_l").id]
 
@@ -196,27 +293,28 @@ class Fighter2DEnv(gym.Env):
 
         self.a_torso_id = self.model.body("a_torso").id
         self.b_torso_id = self.model.body("b_torso").id
+        self.a_head_id = self.model.body("a_head").id
+        self.b_head_id = self.model.body("b_head").id
 
         self.a_punch_weapons = {self.model.geom(f"a_{g}").id for g in ("forearm_r", "forearm_l")}
         self.a_kick_weapons = {self.model.geom(f"a_{g}").id for g in ("shin_r", "shin_l")}
         self.b_punch_weapons = {self.model.geom(f"b_{g}").id for g in ("forearm_r", "forearm_l")}
         self.b_kick_weapons = {self.model.geom(f"b_{g}").id for g in ("shin_r", "shin_l")}
 
-        # ground-contact tracking (foot-plant reward / knee-down penalty): the shin capsule
-        # spans from the knee (its own body origin, since shin_r/l is positioned exactly at
-        # the knee joint) down to the foot site -- so a shin-floor contact is classified as
-        # "knee" or "foot" by whichever end its contact point is closer to, no extra geoms needed.
+        # ground-contact tracking (foot-plant reward / knee-down penalty): each leg now has a
+        # dedicated foot geom (a heel-to-toe capsule at the shin's bottom, added for a real
+        # fore-aft base of support instead of balancing on the shin's rounded tip) -- a
+        # foot-geom-floor contact is unambiguously "foot planted", a shin-geom-floor contact
+        # (the shin capsule itself, above the foot) is unambiguously "knee down".
         self.floor_id = self.model.geom("floor").id
 
         def leg_setup(prefix):
-            shin_geoms = {self.model.geom(f"{prefix}{g}").id: self.model.body(f"{prefix}{g}").id
-                          for g in ("shin_r", "shin_l")}
-            foot_sites = {self.model.geom(f"{prefix}{g}").id: self.model.site(f"{prefix}foot_{g[-1]}").id
-                          for g in ("shin_r", "shin_l")}
-            return shin_geoms, foot_sites
+            shin_geoms = {self.model.geom(f"{prefix}shin_{s}").id for s in ("r", "l")}
+            foot_geoms = {self.model.geom(f"{prefix}foot_{s}").id for s in ("r", "l")}
+            return shin_geoms, foot_geoms
 
-        self.a_shin_geoms, self.a_foot_sites = leg_setup("a_")
-        self.b_shin_geoms, self.b_foot_sites = leg_setup("b_")
+        self.a_shin_geoms, self.a_foot_geoms = leg_setup("a_")
+        self.b_shin_geoms, self.b_foot_geoms = leg_setup("b_")
 
         def targets_by_part(prefix):
             return {
@@ -320,31 +418,23 @@ class Fighter2DEnv(gym.Env):
             damage[part] = min(damage[part] * FORCE_TO_DAMAGE, MAX_STEP_DAMAGE)
         return damage, current_pairs
 
-    def _leg_ground_contacts(self, shin_geoms, foot_sites):
+    def _leg_ground_contacts(self, shin_geoms, foot_geoms):
         """Counts, out of this fighter's 2 legs, how many have the foot planted on the
-        floor vs. a knee down. Each shin-floor contact is classified by whichever end
-        (knee = the shin body's own origin, foot = the foot site) the contact point is
-        closer to. Returns (feet_planted, knees_down), each in [0, 2]."""
+        floor vs. a knee down. Each leg now has a dedicated foot geom (below/separate
+        from the shin capsule), so a foot-geom-floor contact is unambiguously a plant
+        and a shin-geom-floor contact is unambiguously a knee-down. Returns
+        (feet_planted, knees_down), each in [0, 2]."""
         feet_planted, knees_down = 0, 0
-        for shin_geom_id, shin_body_id in shin_geoms.items():
-            knee_pos = self.data.xpos[shin_body_id]
-            foot_pos = self.data.site_xpos[foot_sites[shin_geom_id]]
-            touched, nearest_is_foot = False, True
-            for i in range(self.data.ncon):
-                c = self.data.contact[i]
-                if not ((c.geom1 == self.floor_id and c.geom2 == shin_geom_id)
-                        or (c.geom2 == self.floor_id and c.geom1 == shin_geom_id)):
-                    continue
-                touched = True
-                d_foot = np.linalg.norm(c.pos - foot_pos)
-                d_knee = np.linalg.norm(c.pos - knee_pos)
-                nearest_is_foot = d_foot <= d_knee
-                if nearest_is_foot:
-                    break  # foot contact takes priority if this leg has both
-            if touched:
-                feet_planted += int(nearest_is_foot)
-                knees_down += int(not nearest_is_foot)
-        return feet_planted, knees_down
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            other = c.geom2 if c.geom1 == self.floor_id else c.geom1 if c.geom2 == self.floor_id else None
+            if other is None:
+                continue
+            if other in foot_geoms:
+                feet_planted += 1
+            elif other in shin_geoms:
+                knees_down += 1
+        return min(feet_planted, 2), min(knees_down, 2)
 
     def _obs(self):
         """'a's point of view. Mirrored (self._a_mirror, re-rolled each reset) on a
@@ -371,6 +461,9 @@ class Fighter2DEnv(gym.Env):
         self._prev_b_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
         self._a_mirror = bool(self.np_random.random() < A_MIRROR_AUGMENT_PROB)
         self._t = 0.0
+        a_foot_xs = [self.data.site_xpos[s][0] for s in self.a_feet]
+        b_foot_xs = [self.data.site_xpos[s][0] for s in self.b_feet]
+        self._prev_foot_dist = min(abs(bf - af) for af in a_foot_xs for bf in b_foot_xs)
         return self._obs(), {}
 
     def _power_scale(self, qpos_idx, ranges, min_power):
@@ -483,77 +576,83 @@ class Fighter2DEnv(gym.Env):
         a_foot_xs = [self.data.site_xpos[s][0] for s in self.a_feet]
         b_foot_xs = [self.data.site_xpos[s][0] for s in self.b_feet]
         foot_dist = min(abs(bf - af) for af in a_foot_xs for bf in b_foot_xs)
+        a_stance_gap = abs(a_foot_xs[0] - a_foot_xs[1])
+        b_stance_gap = abs(b_foot_xs[0] - b_foot_xs[1])
+        a_stance_reward = STANCE_REWARD_SCALE * min(1.0, a_stance_gap / STANCE_GAP_REF) ** 2
+        b_stance_reward = STANCE_REWARD_SCALE * min(1.0, b_stance_gap / STANCE_GAP_REF) ** 2
         # log form: no free zone (always some gradient to close in), but steep only near contact
         # range and flattening out at long range, instead of an unbounded linear penalty
         engage_penalty = np.log1p(foot_dist) * ENGAGE_PENALTY_SCALE
+        # reward for the ACT of closing distance this step, not just the state of being close --
+        # positive when foot_dist shrank since last step. Symmetric for a/b (both get credit for
+        # the same shared distance closing), unlike engage_penalty being on both sides too.
+        progress_reward = (self._prev_foot_dist - foot_dist) * PROGRESS_REWARD_SCALE
+        self._prev_foot_dist = foot_dist
         a_down_depth = max(0.0, FALL_HEIGHT - a_z)
         b_down_depth = max(0.0, FALL_HEIGHT - b_z)
         down_penalty = DOWN_PENALTY_SCALE * (a_down_depth - b_down_depth)
         knockdown_entry = KNOCKDOWN_ENTRY_PENALTY * (int(self.down_steps["a"] == 1) - int(self.down_steps["b"] == 1))
         a_lean_excess = max(0.0, abs(a_ry) - BALANCE_FREE_ZONE)
         b_lean_excess = max(0.0, abs(b_ry) - BALANCE_FREE_ZONE)
-        balance_penalty = BALANCE_PENALTY_SCALE * (a_lean_excess ** 2 - b_lean_excess ** 2)
+        # absolute, NOT signed a-vs-b like down/knockdown_entry/ground/knee below -- those are
+        # genuinely relative (what matters in a knockdown is WHO is down), but balance isn't:
+        # both fighters being equally unstable at once is still bad for both of them, and a
+        # signed-difference version nets to ~0 in exactly that case, killing the gradient
+        # toward staying upright whenever the opponent is just as off-balance.
+        a_balance_penalty = BALANCE_PENALTY_SCALE * a_lean_excess ** 2
+        b_balance_penalty = BALANCE_PENALTY_SCALE * b_lean_excess ** 2
 
-        a_feet_planted, a_knees_down = self._leg_ground_contacts(self.a_shin_geoms, self.a_foot_sites)
-        b_feet_planted, b_knees_down = self._leg_ground_contacts(self.b_shin_geoms, self.b_foot_sites)
-        ground_bonus = GROUND_CONTACT_SCALE * ((a_feet_planted - b_feet_planted) / 2.0)
-        knee_penalty = KNEE_CONTACT_PENALTY * (a_knees_down - b_knees_down)
+        a_head_z = self.data.xpos[self.a_head_id][2]
+        b_head_z = self.data.xpos[self.b_head_id][2]
+        a_height_reward = HEAD_HEIGHT_REWARD_SCALE * min(HEAD_HEIGHT_RATIO_CAP, max(0.0, a_head_z / STANDING_HEAD_HEIGHT)) ** 2
+        b_height_reward = HEAD_HEIGHT_REWARD_SCALE * min(HEAD_HEIGHT_RATIO_CAP, max(0.0, b_head_z / STANDING_HEAD_HEIGHT)) ** 2
+
+        a_z_down_vel = max(0.0, -self.data.qvel[self.a_z_dof])
+        b_z_down_vel = max(0.0, -self.data.qvel[self.b_z_dof])
+        a_stability_reward = STABILITY_REWARD_SCALE * max(0.0, 1.0 - a_z_down_vel / Z_VEL_REF) ** 2
+        b_stability_reward = STABILITY_REWARD_SCALE * max(0.0, 1.0 - b_z_down_vel / Z_VEL_REF) ** 2
+
+        a_min_knee_z = min(self.data.xanchor[self.a_knee_r_id][2], self.data.xanchor[self.a_knee_l_id][2])
+        b_min_knee_z = min(self.data.xanchor[self.b_knee_r_id][2], self.data.xanchor[self.b_knee_l_id][2])
+        a_knee_avoid_reward = KNEE_AVOID_SCALE * min(1.0, max(0.0, a_min_knee_z / KNEE_HEIGHT_REF)) ** 2
+        b_knee_avoid_reward = KNEE_AVOID_SCALE * min(1.0, max(0.0, b_min_knee_z / KNEE_HEIGHT_REF)) ** 2
 
         strike_reward = (reward_damage(dmg_to_b_punch) + reward_damage(dmg_to_b_kick) * KICK_REWARD_BONUS) \
             - (reward_damage(dmg_to_a_punch) + reward_damage(dmg_to_a_kick) * KICK_REWARD_BONUS)
 
-        # each entry is this step's actual contribution to `reward` -- kept as the single source of
-        # truth (reward = sum of these) so the breakdown in `info` can never drift from the total.
+        # Simplified to 4 terms (strike, engage, progress, height) -- effort/jerk/down/
+        # knockdown_entry/balance/ground/knee/terminal all dropped. balance is subsumed by height
+        # (leaning also drops head height, so the accelerating height reward already discourages
+        # it); falling is now only discouraged indirectly, by forfeiting height+strike reward
+        # while down, not via a direct terminal penalty -- kept as the single source of truth
+        # (reward = sum of these) so the breakdown in `info` can never drift from the total.
         reward_terms = {
             "strike": strike_reward * DAMAGE_REWARD_SCALE,
-            "effort": -EFFORT_COST * np.sum(action ** 2),
-            "jerk": -jerk_penalty,
             "engage": -engage_penalty,
-            "down": -down_penalty,
-            "knockdown_entry": -knockdown_entry,
-            "balance": -balance_penalty,
-            "ground": ground_bonus,
-            "knee": -knee_penalty,
-            "terminal": 0.0,
+            "progress": progress_reward,
+            "height": a_height_reward,
+            "stability": a_stability_reward,
+            "stance": a_stance_reward,
+            "knee_avoid": a_knee_avoid_reward,
         }
 
         # mirrored reward from 'b's own point of view (self-play only, since the scripted
-        # opponent's "score" isn't a meaningful training signal). engage_penalty is symmetric
-        # (a shared distance, not an a-vs-b difference) so it carries over unchanged; down_penalty,
-        # knockdown_entry, balance_penalty, ground_bonus and knee_penalty are all signed a-vs-b
-        # differences, so b's version is just their negation.
+        # opponent's "score" isn't a meaningful training signal). engage_penalty/progress_reward
+        # are symmetric (a shared distance, not an a-vs-b difference) so they carry over unchanged.
         if b_full_action is not None:
             reward_terms_b = {
                 "strike": -strike_reward * DAMAGE_REWARD_SCALE,
-                "effort": -EFFORT_COST * np.sum(b_full_action ** 2),
-                "jerk": -b_jerk_penalty,
                 "engage": -engage_penalty,
-                "down": down_penalty,
-                "knockdown_entry": knockdown_entry,
-                "balance": balance_penalty,
-                "ground": -ground_bonus,
-                "knee": knee_penalty,
-                "terminal": 0.0,
+                "progress": progress_reward,
+                "height": b_height_reward,
+                "stability": b_stability_reward,
+                "stance": b_stance_reward,
+                "knee_avoid": b_knee_avoid_reward,
             }
         else:
             reward_terms_b = None
 
-        terminated = False
-        if a_out and b_out:
-            reward_terms["terminal"] = -MUTUAL_FALL_PENALTY
-            if reward_terms_b is not None:
-                reward_terms_b["terminal"] = -MUTUAL_FALL_PENALTY
-            terminated = True
-        elif a_out:
-            reward_terms["terminal"] = -FALL_PENALTY
-            if reward_terms_b is not None:
-                reward_terms_b["terminal"] = FALL_PENALTY
-            terminated = True
-        elif b_out:
-            reward_terms["terminal"] = FALL_PENALTY
-            if reward_terms_b is not None:
-                reward_terms_b["terminal"] = -FALL_PENALTY
-            terminated = True
+        terminated = a_out or b_out
 
         reward = sum(reward_terms.values())
 
@@ -563,6 +662,8 @@ class Fighter2DEnv(gym.Env):
             "health_a": self.health["a"], "health_b": self.health["b"],
             "stagger_a": self.stagger["a"], "stagger_b": self.stagger["b"],
             "reward_breakdown": reward_terms,
+            "a_out": a_out, "b_out": b_out,
+            "a_head_z": a_head_z, "b_head_z": b_head_z,
         }
         if reward_terms_b is not None:
             info["reward_b"] = sum(reward_terms_b.values())

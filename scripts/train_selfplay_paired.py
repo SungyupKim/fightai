@@ -26,7 +26,7 @@ class BreakdownCallback(BaseCallback):
     train_selfplay.py's -- now averaged uniformly across every slot (both the 'a' and
     'b' perspective of every match count as regular envs here, no a/b split needed)."""
 
-    KEYS = ["strike", "effort", "jerk", "engage", "down", "knockdown_entry", "balance", "ground", "knee", "terminal"]
+    KEYS = ["strike", "engage", "progress", "height", "stability", "stance"]
 
     def __init__(self, window=100):
         super().__init__()

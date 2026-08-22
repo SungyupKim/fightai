@@ -17,7 +17,7 @@
     <geom name="floor" type="plane" size="5 3 0.1" material="grid" friction="1.0 0.01 0.01"/>
     <camera name="side" pos="0 -4.5 1.1" xyaxes="1 0 0 0 0 1"/>
 
-    <body name="a_torso" pos="-0.9 0 1.06">
+    <body name="a_torso" pos="-0.6 0 1.06">
       <joint name="a_root_x" type="slide" axis="1 0 0" limited="false" damping="0.5"/>
       <joint name="a_root_z" type="slide" axis="0 0 1" limited="false" damping="0.5"/>
       <joint name="a_root_ry" type="hinge" axis="0 1 0" limited="false" damping="0.5"/>
@@ -47,27 +47,41 @@
       </body>
 
       <body name="a_thigh_r" pos="0 -0.09 -0.22">
-        <joint name="a_hip_r" type="hinge" axis="0 1 0" range="-105 105" damping="2" armature="0.02"/>
+        <!-- damping raised 2->3 alongside the hip/knee gear bump (60->90/40->60, see
+             ACTUATOR_GEAR) -- gear alone made falls worse (68%->86% over 10 league rounds),
+             stronger torque with unchanged damping likely made motion twitchier/harder to
+             control rather than more stable. Scaling damping by the same 1.5x tests whether
+             that's actually the cause. -->
+        <joint name="a_hip_r" type="hinge" axis="0 1 0" range="-105 105" damping="3" armature="0.02"/>
         <geom name="a_thigh_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="0.85 0.2 0.2 1"/>
         <body name="a_shin_r" pos="0 0 -0.42">
-          <joint name="a_knee_r" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
+          <joint name="a_knee_r" type="hinge" axis="0 1 0" range="-140 0" damping="3" armature="0.02"/>
           <geom name="a_shin_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="0.85 0.2 0.2 1"/>
+          <!-- foot: tried a flat box sole for a genuine contact patch instead of a rolling line
+               contact, but it measurably made falls worse (68%->90% over ~2100 episodes) -- a
+               box has corners, and a corner catching the ground at even a slight foot angle
+               creates a sudden torque spike a capsule's smooth curve never would (same reason
+               robots use rounded feet, not flat-edged ones). Reverted to a capsule but fattened
+               the radius 2x (0.035->0.07) for a bigger, more forgiving contact tolerance while
+               keeping the smooth rolling contact. -->
+          <geom name="a_foot_r" type="capsule" fromto="-0.05 0 -0.42 0.12 0 -0.42" size="0.07" rgba="0.85 0.2 0.2 1"/>
           <site name="a_foot_r" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
 
       <body name="a_thigh_l" pos="0 0.09 -0.22">
-        <joint name="a_hip_l" type="hinge" axis="0 1 0" range="-105 105" damping="2" armature="0.02"/>
+        <joint name="a_hip_l" type="hinge" axis="0 1 0" range="-105 105" damping="3" armature="0.02"/>
         <geom name="a_thigh_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="0.85 0.2 0.2 1"/>
         <body name="a_shin_l" pos="0 0 -0.42">
-          <joint name="a_knee_l" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
+          <joint name="a_knee_l" type="hinge" axis="0 1 0" range="-140 0" damping="3" armature="0.02"/>
           <geom name="a_shin_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="0.85 0.2 0.2 1"/>
+          <geom name="a_foot_l" type="capsule" fromto="-0.05 0 -0.42 0.12 0 -0.42" size="0.07" rgba="0.85 0.2 0.2 1"/>
           <site name="a_foot_l" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
     </body>
 
-    <body name="b_torso" pos="0.9 0 1.06">
+    <body name="b_torso" pos="0.6 0 1.06">
       <joint name="b_root_x" type="slide" axis="1 0 0" limited="false" damping="0.5"/>
       <joint name="b_root_z" type="slide" axis="0 0 1" limited="false" damping="0.5"/>
       <joint name="b_root_ry" type="hinge" axis="0 1 0" limited="false" damping="0.5"/>
@@ -97,21 +111,35 @@
       </body>
 
       <body name="b_thigh_r" pos="0 -0.09 -0.22">
-        <joint name="b_hip_r" type="hinge" axis="0 1 0" range="-105 105" damping="2" armature="0.02"/>
+        <!-- damping raised 2->3 alongside the hip/knee gear bump (60->90/40->60, see
+             ACTUATOR_GEAR) -- gear alone made falls worse (68%->86% over 10 league rounds),
+             stronger torque with unchanged damping likely made motion twitchier/harder to
+             control rather than more stable. Scaling damping by the same 1.5x tests whether
+             that's actually the cause. -->
+        <joint name="b_hip_r" type="hinge" axis="0 1 0" range="-105 105" damping="3" armature="0.02"/>
         <geom name="b_thigh_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="0.2 0.4 0.85 1"/>
         <body name="b_shin_r" pos="0 0 -0.42">
-          <joint name="b_knee_r" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
+          <joint name="b_knee_r" type="hinge" axis="0 1 0" range="-140 0" damping="3" armature="0.02"/>
           <geom name="b_shin_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="0.2 0.4 0.85 1"/>
+          <!-- foot: tried a flat box sole for a genuine contact patch instead of a rolling line
+               contact, but it measurably made falls worse (68%->90% over ~2100 episodes) -- a
+               box has corners, and a corner catching the ground at even a slight foot angle
+               creates a sudden torque spike a capsule's smooth curve never would (same reason
+               robots use rounded feet, not flat-edged ones). Reverted to a capsule but fattened
+               the radius 2x (0.035->0.07) for a bigger, more forgiving contact tolerance while
+               keeping the smooth rolling contact. -->
+          <geom name="b_foot_r" type="capsule" fromto="-0.05 0 -0.42 0.12 0 -0.42" size="0.07" rgba="0.2 0.4 0.85 1"/>
           <site name="b_foot_r" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
 
       <body name="b_thigh_l" pos="0 0.09 -0.22">
-        <joint name="b_hip_l" type="hinge" axis="0 1 0" range="-105 105" damping="2" armature="0.02"/>
+        <joint name="b_hip_l" type="hinge" axis="0 1 0" range="-105 105" damping="3" armature="0.02"/>
         <geom name="b_thigh_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="0.2 0.4 0.85 1"/>
         <body name="b_shin_l" pos="0 0 -0.42">
-          <joint name="b_knee_l" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
+          <joint name="b_knee_l" type="hinge" axis="0 1 0" range="-140 0" damping="3" armature="0.02"/>
           <geom name="b_shin_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="0.2 0.4 0.85 1"/>
+          <geom name="b_foot_l" type="capsule" fromto="-0.05 0 -0.42 0.12 0 -0.42" size="0.07" rgba="0.2 0.4 0.85 1"/>
           <site name="b_foot_l" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
@@ -127,10 +155,10 @@
     <motor name="a_elbow_r" joint="a_elbow_r" gear="30" ctrlrange="-1 1"/>
     <motor name="a_shoulder_l" joint="a_shoulder_l" gear="45" ctrlrange="-1 1"/>
     <motor name="a_elbow_l" joint="a_elbow_l" gear="30" ctrlrange="-1 1"/>
-    <motor name="a_hip_r" joint="a_hip_r" gear="60" ctrlrange="-1 1"/>
-    <motor name="a_knee_r" joint="a_knee_r" gear="40" ctrlrange="-1 1"/>
-    <motor name="a_hip_l" joint="a_hip_l" gear="60" ctrlrange="-1 1"/>
-    <motor name="a_knee_l" joint="a_knee_l" gear="40" ctrlrange="-1 1"/>
+    <motor name="a_hip_r" joint="a_hip_r" gear="90" ctrlrange="-1 1"/>
+    <motor name="a_knee_r" joint="a_knee_r" gear="60" ctrlrange="-1 1"/>
+    <motor name="a_hip_l" joint="a_hip_l" gear="90" ctrlrange="-1 1"/>
+    <motor name="a_knee_l" joint="a_knee_l" gear="60" ctrlrange="-1 1"/>
     <motor name="b_root_x" joint="b_root_x" gear="90" ctrlrange="-1 1"/>
     <motor name="b_root_ry" joint="b_root_ry" gear="250" ctrlrange="-1 1"/>
     <motor name="b_head" joint="b_head" gear="20" ctrlrange="-1 1"/>
@@ -138,9 +166,9 @@
     <motor name="b_elbow_r" joint="b_elbow_r" gear="30" ctrlrange="-1 1"/>
     <motor name="b_shoulder_l" joint="b_shoulder_l" gear="45" ctrlrange="-1 1"/>
     <motor name="b_elbow_l" joint="b_elbow_l" gear="30" ctrlrange="-1 1"/>
-    <motor name="b_hip_r" joint="b_hip_r" gear="60" ctrlrange="-1 1"/>
-    <motor name="b_knee_r" joint="b_knee_r" gear="40" ctrlrange="-1 1"/>
-    <motor name="b_hip_l" joint="b_hip_l" gear="60" ctrlrange="-1 1"/>
-    <motor name="b_knee_l" joint="b_knee_l" gear="40" ctrlrange="-1 1"/>
+    <motor name="b_hip_r" joint="b_hip_r" gear="90" ctrlrange="-1 1"/>
+    <motor name="b_knee_r" joint="b_knee_r" gear="60" ctrlrange="-1 1"/>
+    <motor name="b_hip_l" joint="b_hip_l" gear="90" ctrlrange="-1 1"/>
+    <motor name="b_knee_l" joint="b_knee_l" gear="60" ctrlrange="-1 1"/>
   </actuator>
 </mujoco>
