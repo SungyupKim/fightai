@@ -173,6 +173,33 @@
     </div>
 
     <div class="panel full">
+      <h2>리그 라운드별 매치업</h2>
+      <div class="legend">
+        <span><span class="swatch" style="background:#4f8cff"></span>P1(a) 패</span>
+        <span><span class="swatch" style="background:#ffb454"></span>P2(b) 패</span>
+        <span><span class="swatch" style="background:#3ecf8e"></span>P1 KO</span>
+        <span><span class="swatch" style="background:#ef476f"></span>P2 KO</span>
+        <span><span class="swatch" style="background:#5fd3f3"></span>P1 타격수</span>
+        <span><span class="swatch" style="background:#c77dff"></span>P2 타격수</span>
+      </div>
+      <canvas id="chart-league"></canvas>
+      <div id="chart-league-empty" class="chart-empty" style="display:none;">아직 라운드 데이터 없음</div>
+      <div id="league-round-status" class="log" style="margin-top:6px;"></div>
+    </div>
+
+    <div class="panel full">
+      <h2>리그 라운드별 자세 / 안정성</h2>
+      <div class="legend">
+        <span><span class="swatch" style="background:#ef9fbc"></span>P1 머리높이 비율</span>
+        <span><span class="swatch" style="background:#a78bfa"></span>P2 머리높이 비율</span>
+        <span><span class="swatch" style="background:#ffd166"></span>학습된 쪽 정책 std (탐험성 -- 붕괴/폭주 감시용)</span>
+      </div>
+      <canvas id="chart-league-posture"></canvas>
+      <div id="chart-league-posture-empty" class="chart-empty" style="display:none;">아직 라운드 데이터 없음</div>
+      <div id="league-posture-status" class="log" style="margin-top:6px;"></div>
+    </div>
+
+    <div class="panel full">
       <h2>보상 항목별 breakdown</h2>
       <div id="metric-picker-breakdown" class="legend" style="flex-wrap:wrap; gap:10px 16px;"></div>
       <canvas id="chart-breakdown"></canvas>
@@ -352,8 +379,8 @@ $('btn-train-stop').addEventListener('click', async () => {
   refreshStatus();
 });
 
-async function startWatch(checkpoint) {
-  const opponent = $('in-watch-opponent').value || undefined;
+async function startWatch(checkpoint, opponent) {
+  if (opponent === undefined) opponent = $('in-watch-opponent').value || undefined;
   const r = await api('/api/watch/start', { method: 'POST', body: JSON.stringify({ checkpoint, opponent }) });
   if (r.error) alert(r.error);
   refreshStatus();
@@ -365,7 +392,9 @@ $('btn-watch-start').addEventListener('click', () => {
   startWatch(checkpoint);
 });
 
-$('btn-watch-latest').addEventListener('click', () => startWatch('__latest__'));
+// P1(a)/P2(b) each resolve to their own side's newest checkpoint server-side (see
+// latest_by_role() in dashboard.py) -- not just whichever checkpoint of either role is newest.
+$('btn-watch-latest').addEventListener('click', () => startWatch('__latest__', '__latest__'));
 
 $('btn-watch-mirror').addEventListener('click', async () => {
   const a = $('in-watch-checkpoint').value;
@@ -471,12 +500,11 @@ function drawLine(ctx, pts, xKey, yKey, xMin, xMax, yMin, yMax, w, h, pad, color
 
 const METRIC_COLORS = {
   ep_rew_mean: '#4f8cff', b_ep_rew_mean: '#ffb454', ep_len_mean: '#8b93a3',
-  r_strike: '#3ecf8e', r_effort: '#ff5f6d', r_jerk: '#c792ea',
-  r_engage: '#5fd3f3', r_down: '#f78c6c', r_knockdown_entry: '#ffd166',
-  r_balance: '#ef9fbc', r_ground: '#7fd88f', r_knee: '#e08a4f', r_terminal: '#9aa5b1',
+  r_strike: '#3ecf8e', r_engage: '#5fd3f3', r_progress: '#ffd166', r_height: '#ef9fbc', r_stability: '#a78bfa',
+  r_stance: '#5fb3d3',
 };
 const TOTALS_METRICS = ['ep_rew_mean', 'b_ep_rew_mean', 'ep_len_mean'];
-const BREAKDOWN_METRICS = ['r_strike', 'r_effort', 'r_jerk', 'r_engage', 'r_down', 'r_knockdown_entry', 'r_balance', 'r_ground', 'r_knee', 'r_terminal'];
+const BREAKDOWN_METRICS = ['r_strike', 'r_engage', 'r_progress', 'r_height', 'r_stability', 'r_stance'];
 
 // two independent chart instances: 'totals' (ep_rew_mean vs b_ep_rew_mean) and
 // 'breakdown' (the reward_breakdown terms) -- kept on separate axes since their
@@ -508,11 +536,10 @@ function buildMetricPicker(name) {
   chart.built = true;
 }
 
-// these three are pure costs (Sum(action^2), Sum(delta-action^2), log1p(distance) --
-// all structurally >= 0 before their reward-side minus sign), so they can never be
-// positive as reward contributions. Flipped to positive "cost incurred" for display
+// pure cost (log1p(distance), structurally >= 0 before its reward-side minus sign), so it can
+// never be positive as a reward contribution. Flipped to positive "cost incurred" for display
 // only -- the actual training reward keeps its real sign, this doesn't touch that.
-const ALWAYS_NEGATIVE_KEYS = new Set(['r_effort', 'r_jerk', 'r_engage']);
+const ALWAYS_NEGATIVE_KEYS = new Set(['r_engage']);
 
 function drawChart(name, points) {
   const series = [...charts[name].active];
@@ -577,13 +604,132 @@ async function refreshHistory() {
   });
 }
 
+function drawLeagueChart(rounds) {
+  const canvas = $('chart-league');
+  const empty = $('chart-league-empty');
+  if (!rounds || rounds.length === 0) {
+    canvas.style.display = 'none';
+    empty.style.display = 'block';
+    $('league-round-status').textContent = '';
+    return;
+  }
+  canvas.style.display = 'block';
+  empty.style.display = 'none';
+
+  const { ctx, w, h } = resizeCanvas(canvas);
+  ctx.clearRect(0, 0, w, h);
+  const pad = 34;
+  const episodes = rounds[0].episodes;
+
+  const indexed = rounds.map((r, i) => ({
+    ...r, _idx: i,
+    aKo: r.endReasons?.a_ko || 0, bKo: r.endReasons?.b_ko || 0,
+  }));
+  // losses/KO are capped at episodes, but hit counts routinely exceed it (many hits land
+  // per match) -- scale the axis to whichever is actually bigger so hit lines aren't clipped.
+  const yMax = Math.max(episodes, ...indexed.map(r => Math.max(r.hitsA || 0, r.hitsB || 0))) * 1.05;
+
+  ctx.strokeStyle = '#2a2f3a';
+  ctx.fillStyle = '#8b93a3';
+  ctx.font = '10px -apple-system, sans-serif';
+  ctx.lineWidth = 1;
+  const rows = 4;
+  for (let i = 0; i <= rows; i++) {
+    const y = pad + (h - pad * 2) * (i / rows);
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - 8, y); ctx.stroke();
+    const val = Math.round(yMax - yMax * (i / rows));
+    ctx.fillText(val, 4, y + 3);
+  }
+  ctx.fillText('round ' + rounds[0].round, pad, h - 6);
+  const xMaxLabel = 'round ' + rounds[rounds.length - 1].round;
+  ctx.fillText(xMaxLabel, w - 8 - ctx.measureText(xMaxLabel).width, h - 6);
+
+  const xMin = 0, xMax = rounds.length - 1;
+  drawLine(ctx, indexed, '_idx', 'aLosses', xMin, xMax, 0, yMax, w, h, pad, '#4f8cff');
+  drawLine(ctx, indexed, '_idx', 'bLosses', xMin, xMax, 0, yMax, w, h, pad, '#ffb454');
+  drawLine(ctx, indexed, '_idx', 'aKo', xMin, xMax, 0, yMax, w, h, pad, '#3ecf8e');
+  drawLine(ctx, indexed, '_idx', 'bKo', xMin, xMax, 0, yMax, w, h, pad, '#ef476f');
+  drawLine(ctx, indexed, '_idx', 'hitsA', xMin, xMax, 0, yMax, w, h, pad, '#5fd3f3');
+  drawLine(ctx, indexed, '_idx', 'hitsB', xMin, xMax, 0, yMax, w, h, pad, '#c77dff');
+
+  const last = rounds[rounds.length - 1];
+  const trainedTxt = last.trained ? `이번 라운드 학습: ${last.trained === 'a' ? 'P1(a)' : 'P2(b)'}` : '';
+  const lastKo = `KO: P1 ${last.endReasons?.a_ko || 0} / P2 ${last.endReasons?.b_ko || 0}`;
+  const lastHits = `타격수: P1 ${last.hitsA ?? '-'} / P2 ${last.hitsB ?? '-'}`;
+  $('league-round-status').textContent =
+    `라운드 ${last.round} · P1패 ${last.aLosses} / P2패 ${last.bLosses} (${episodes}판 기준) · ${lastKo} · ${lastHits} ${trainedTxt}`;
+}
+
+function drawLeaguePostureChart(rounds) {
+  const canvas = $('chart-league-posture');
+  const empty = $('chart-league-posture-empty');
+  const withData = (rounds || []).filter(r => r.headRatioA != null || r.std != null);
+  if (withData.length === 0) {
+    canvas.style.display = 'none';
+    empty.style.display = 'block';
+    $('league-posture-status').textContent = '';
+    return;
+  }
+  canvas.style.display = 'block';
+  empty.style.display = 'none';
+
+  const { ctx, w, h } = resizeCanvas(canvas);
+  ctx.clearRect(0, 0, w, h);
+  const pad = 34;
+  // headRatio is roughly 0..1.2 (1.0 = normal standing height); std is a separate, much
+  // smaller/variable scale (healthy range ~0.02-0.6) -- normalize both to a shared 0..1.2
+  // display band so they're readable on one chart without a second axis.
+  const yMax = 1.2;
+
+  ctx.strokeStyle = '#2a2f3a';
+  ctx.fillStyle = '#8b93a3';
+  ctx.font = '10px -apple-system, sans-serif';
+  ctx.lineWidth = 1;
+  const rows = 4;
+  for (let i = 0; i <= rows; i++) {
+    const y = pad + (h - pad * 2) * (i / rows);
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w - 8, y); ctx.stroke();
+    const val = (yMax - yMax * (i / rows)).toFixed(2);
+    ctx.fillText(val, 4, y + 3);
+  }
+  ctx.fillText('round ' + rounds[0].round, pad, h - 6);
+  const xMaxLabel = 'round ' + rounds[rounds.length - 1].round;
+  ctx.fillText(xMaxLabel, w - 8 - ctx.measureText(xMaxLabel).width, h - 6);
+
+  const indexed = rounds.map((r, i) => ({ ...r, _idx: i }));
+  const xMin = 0, xMax = rounds.length - 1;
+  drawLine(ctx, indexed, '_idx', 'headRatioA', xMin, xMax, 0, yMax, w, h, pad, '#ef9fbc');
+  drawLine(ctx, indexed, '_idx', 'headRatioB', xMin, xMax, 0, yMax, w, h, pad, '#a78bfa');
+  drawLine(ctx, indexed, '_idx', 'std', xMin, xMax, 0, yMax, w, h, pad, '#ffd166');
+
+  const last = withData[withData.length - 1];
+  const stdTxt = last.std != null ? last.std.toFixed(3) : '-';
+  const stdWarn = last.std != null && (last.std > 1.0 || last.std < 0.005) ? ' ⚠ 정상 범위 벗어남' : '';
+  $('league-posture-status').textContent =
+    `라운드 ${last.round} · 머리높이비율 P1 ${(last.headRatioA ?? 0).toFixed(2)} / P2 ${(last.headRatioB ?? 0).toFixed(2)} · std ${stdTxt}${stdWarn}`;
+}
+
+let lastLeagueRounds = [];
+async function refreshLeagueTrend() {
+  const { rounds } = await api('/api/league_trend');
+  lastLeagueRounds = rounds || [];
+  drawLeagueChart(lastLeagueRounds);
+  drawLeaguePostureChart(lastLeagueRounds);
+}
+
 refreshStatus();
 refreshCheckpoints();
 refreshHistory();
+refreshLeagueTrend();
 setInterval(refreshStatus, 2000);
 setInterval(refreshCheckpoints, 10000);
 setInterval(refreshHistory, 5000);
-window.addEventListener('resize', () => Object.keys(charts).forEach(name => drawChart(name, lastPoints)));
+setInterval(refreshLeagueTrend, 5000);
+window.addEventListener('resize', () => {
+  Object.keys(charts).forEach(name => drawChart(name, lastPoints));
+  drawLeagueChart(lastLeagueRounds);
+  drawLeaguePostureChart(lastLeagueRounds);
+});
 </script>
 </body>
 </html>

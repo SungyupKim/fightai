@@ -21,7 +21,7 @@ CKPT.mkdir(exist_ok=True)
 
 TRAIN_PATTERN = r"train(_selfplay(_paired)?|_equivariant|_league)?\.py --|selfplay_league_(loop\.sh|dynamic\.py)"
 WATCH_PATTERN = r"watch\.py"
-BREAKDOWN_KEYS = ["r_strike", "r_effort", "r_jerk", "r_engage", "r_down", "r_knockdown_entry", "r_balance", "r_ground", "r_knee", "r_terminal"]
+BREAKDOWN_KEYS = ["r_strike", "r_engage", "r_progress", "r_height", "r_stability", "r_stance"]
 ROLLOUT_KEYS = ["total_timesteps", "ep_rew_mean", "b_ep_rew_mean", "ep_len_mean", "fps"] + BREAKDOWN_KEYS
 # metrics offered in the chart's series picker: total_timesteps is the x-axis, not a plottable series
 CHART_METRICS = [k for k in ROLLOUT_KEYS if k not in ("total_timesteps", "fps")]
@@ -89,6 +89,86 @@ def parse_log_history(path, n_bytes=3_000_000, max_points=300):
     return points
 
 
+LEAGUE_LOG_PATH = CKPT / "league_dynamic_loop.log"
+MATCHUP_RE = re.compile(
+    r"^\[dynamic\] round (\d+)/\d+: matchup a_losses=(\d+) b_losses=(\d+) \(of (\d+)\)"
+)
+TRAINED_RE = re.compile(r"^\[dynamic\] round (\d+)/\d+: training side=(\w)")
+END_REASONS_RE = re.compile(
+    r"^\[dynamic\] round (\d+)/\d+: end_reasons (\{.*?\}) "
+    r"head_ratio_a=([\w.None]+) head_ratio_b=([\w.None]+)"
+)
+DONE_RE = re.compile(r"^\[dynamic\] round (\d+)/\d+: side=(\w) done in \d+s .* std=([\w.None]+)")
+HITS_RE = re.compile(r"^\[dynamic\] round (\d+)/\d+: hits_a=([\w.None]+) hits_b=([\w.None]+)")
+
+
+def parse_league_trend():
+    """Round-by-round P1/P2 matchup history for the dashboard chart. The dynamic
+    league loop always appends to this one canonical log path regardless of which
+    wrapper/relaunch started it (see selfplay_league_dynamic.py's LOG_PATH), so a
+    fresh run restarts its round numbering from 1 in the same file -- only the
+    lines after the LAST "round 1/" line belong to the current run."""
+    try:
+        lines = LEAGUE_LOG_PATH.read_text(errors="ignore").splitlines()
+    except OSError:
+        return []
+    dynamic_lines = [l for l in lines if l.startswith("[dynamic]")]
+    last_start = 0
+    for i, l in enumerate(dynamic_lines):
+        if re.match(r"^\[dynamic\] round 1/\d+: matchup", l):
+            last_start = i
+    dynamic_lines = dynamic_lines[last_start:]
+
+    def _float_or_none(s):
+        try:
+            return float(s)
+        except (TypeError, ValueError):
+            return None
+
+    rounds = {}
+    for line in dynamic_lines:
+        m = MATCHUP_RE.match(line)
+        if m:
+            rnd = int(m.group(1))
+            rounds[rnd] = {
+                "round": rnd, "aLosses": int(m.group(2)), "bLosses": int(m.group(3)),
+                "episodes": int(m.group(4)), "trained": None,
+                "endReasons": {}, "headRatioA": None, "headRatioB": None, "std": None,
+                "hitsA": None, "hitsB": None,
+            }
+            continue
+        m = TRAINED_RE.match(line)
+        if m:
+            rnd = int(m.group(1))
+            if rnd in rounds:
+                rounds[rnd]["trained"] = m.group(2)
+            continue
+        m = END_REASONS_RE.match(line)
+        if m:
+            rnd = int(m.group(1))
+            if rnd in rounds:
+                try:
+                    rounds[rnd]["endReasons"] = json.loads(m.group(2))
+                except ValueError:
+                    pass
+                rounds[rnd]["headRatioA"] = _float_or_none(m.group(3))
+                rounds[rnd]["headRatioB"] = _float_or_none(m.group(4))
+            continue
+        m = DONE_RE.match(line)
+        if m:
+            rnd = int(m.group(1))
+            if rnd in rounds:
+                rounds[rnd]["std"] = _float_or_none(m.group(3))
+            continue
+        m = HITS_RE.match(line)
+        if m:
+            rnd = int(m.group(1))
+            if rnd in rounds:
+                rounds[rnd]["hitsA"] = _float_or_none(m.group(2))
+                rounds[rnd]["hitsB"] = _float_or_none(m.group(3))
+    return [rounds[k] for k in sorted(rounds)]
+
+
 def _ckpt_role(name):
     # league checkpoints are named ppo_p1_*/ppo_p2_*[_bootstrap]_* -- P1 was only ever
     # trained controlling 'a' natively, P2 only ever controlling 'b' via the mirrored
@@ -118,6 +198,17 @@ def list_checkpoints():
     entries.sort(key=lambda e: e[2], reverse=True)
     return [{"label": label, "path": str(p), "mtime": mtime, "role": _ckpt_role(label)}
             for p, label, mtime in entries]
+
+
+def latest_by_role(role):
+    """Most recently modified checkpoint tagged with the given role ("P1"/"P2"/"공용"),
+    across both top-level and autosave -- used by the watch panel's "최신" shortcut so
+    Fighter A/B each resolve to their own side's latest checkpoint instead of whichever
+    checkpoint (of either role) happens to be newest overall."""
+    for c in list_checkpoints():
+        if c["role"] == role:
+            return c["path"]
+    return None
 
 
 def paginate_checkpoints(page, page_size, role=None):
@@ -166,6 +257,8 @@ class Handler(BaseHTTPRequestHandler):
                 "points": parse_log_history(log) if log else [],
                 "available_metrics": CHART_METRICS,
             })
+        elif path == "/api/league_trend":
+            self._json({"rounds": parse_league_trend()})
         else:
             self.send_response(404)
             self.end_headers()
@@ -292,16 +385,23 @@ class Handler(BaseHTTPRequestHandler):
             subprocess.run(["kill", pid])
         checkpoint = payload.get("checkpoint")
         if checkpoint == "__latest__":
-            ckpts = list_checkpoints()
-            checkpoint = ckpts[0]["path"] if ckpts else None
+            # latest P1-role checkpoint specifically, not just whichever checkpoint (of
+            # either role) happens to be newest overall -- see latest_by_role().
+            checkpoint = latest_by_role("P1")
+            if checkpoint is None:
+                ckpts = list_checkpoints()
+                checkpoint = ckpts[0]["path"] if ckpts else None
         if not checkpoint or not pathlib.Path(checkpoint).is_file():
             return self._json({"error": "valid checkpoint path required"}, 400)
         # 'opponent' is a separate checkpoint driving 'b' (e.g. a P2 league checkpoint) --
-        # pass the same path as checkpoint for a self-play mirror match, or omit for the
-        # scripted opponent. Using a single shared checkpoint for both sides only makes
-        # sense for pre-league checkpoints; P1/P2 league checkpoints are NOT
-        # interchangeable (see docs/기술문서 on the a/b asymmetry).
+        # pass the same path as checkpoint for a self-play mirror match, "__latest__" for
+        # the newest P2-role checkpoint, or omit for the scripted opponent. Using a single
+        # shared checkpoint for both sides only makes sense for pre-league checkpoints;
+        # P1/P2 league checkpoints are NOT interchangeable (see docs/기술문서 on the a/b
+        # asymmetry).
         opponent = payload.get("opponent") or None
+        if opponent == "__latest__":
+            opponent = latest_by_role("P2")
         if opponent and not pathlib.Path(opponent).is_file():
             return self._json({"error": "opponent checkpoint not found"}, 400)
         time.sleep(0.3)

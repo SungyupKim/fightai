@@ -31,21 +31,35 @@ FIGHTER_TEMPLATE = """
       </body>
 
       <body name="{p}thigh_r" pos="0 -0.09 -0.22">
-        <joint name="{p}hip_r" type="hinge" axis="0 1 0" range="-120 90" damping="2" armature="0.02"/>
+        <!-- damping raised 2->3 alongside the hip/knee gear bump (60->90/40->60, see
+             ACTUATOR_GEAR) -- gear alone made falls worse (68%->86% over 10 league rounds),
+             stronger torque with unchanged damping likely made motion twitchier/harder to
+             control rather than more stable. Scaling damping by the same 1.5x tests whether
+             that's actually the cause. -->
+        <joint name="{p}hip_r" type="hinge" axis="0 1 0" range="-105 105" damping="3" armature="0.02"/>
         <geom name="{p}thigh_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="{color}"/>
         <body name="{p}shin_r" pos="0 0 -0.42">
-          <joint name="{p}knee_r" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
+          <joint name="{p}knee_r" type="hinge" axis="0 1 0" range="-140 0" damping="3" armature="0.02"/>
           <geom name="{p}shin_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="{color}"/>
+          <!-- foot: tried a flat box sole for a genuine contact patch instead of a rolling line
+               contact, but it measurably made falls worse (68%->90% over ~2100 episodes) -- a
+               box has corners, and a corner catching the ground at even a slight foot angle
+               creates a sudden torque spike a capsule's smooth curve never would (same reason
+               robots use rounded feet, not flat-edged ones). Reverted to a capsule but fattened
+               the radius 2x (0.035->0.07) for a bigger, more forgiving contact tolerance while
+               keeping the smooth rolling contact. -->
+          <geom name="{p}foot_r" type="capsule" fromto="-0.05 0 -0.42 0.12 0 -0.42" size="0.07" rgba="{color}"/>
           <site name="{p}foot_r" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
 
       <body name="{p}thigh_l" pos="0 0.09 -0.22">
-        <joint name="{p}hip_l" type="hinge" axis="0 1 0" range="-120 90" damping="2" armature="0.02"/>
+        <joint name="{p}hip_l" type="hinge" axis="0 1 0" range="-105 105" damping="3" armature="0.02"/>
         <geom name="{p}thigh_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="{color}"/>
         <body name="{p}shin_l" pos="0 0 -0.42">
-          <joint name="{p}knee_l" type="hinge" axis="0 1 0" range="-140 0" damping="2" armature="0.02"/>
+          <joint name="{p}knee_l" type="hinge" axis="0 1 0" range="-140 0" damping="3" armature="0.02"/>
           <geom name="{p}shin_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="{color}"/>
+          <geom name="{p}foot_l" type="capsule" fromto="-0.05 0 -0.42 0.12 0 -0.42" size="0.07" rgba="{color}"/>
           <site name="{p}foot_l" pos="0 0 -0.42" size="0.02"/>
         </body>
       </body>
@@ -59,7 +73,12 @@ JOINTS = [
 
 ACTUATOR_GEAR = {
     "head": 20, "shoulder_r": 45, "elbow_r": 30, "shoulder_l": 45, "elbow_l": 30,
-    "hip_r": 60, "knee_r": 40, "hip_l": 60, "knee_l": 40,
+    # hip/knee raised 60->90 / 40->60 (50%): fattening the foot capsule fixed the "sudden
+    # ground-support loss" fall mode (68%->44%), but a follow-up measurement showed a second
+    # mode remains -- knees now visibly buckle (bend further) during the ~20 steps before a
+    # fall, instead of staying static. Testing whether more leg torque lets the policy actually
+    # arrest a stumble instead of getting overpowered by torso weight/combat impacts.
+    "hip_r": 90, "knee_r": 60, "hip_l": 90, "knee_l": 60,
 }
 
 ROOT_GEAR = 90
@@ -88,7 +107,10 @@ def make_actuators(prefix):
 
 
 def build():
-    fighters = make_fighter("a_", -0.9, "0.85 0.2 0.2 1") + make_fighter("b_", 0.9, "0.2 0.4 0.85 1")
+    # Retested -0.9/0.9 (1.8) again after fixing the zero-sum balance_penalty bug --
+    # still only 6.7% engagement (worse than the pre-fix 10%), so the far-spawn problem
+    # is real and independent of that bug. -0.6/0.6 (1.2) is confirmed the right call.
+    fighters = make_fighter("a_", -0.6, "0.85 0.2 0.2 1") + make_fighter("b_", 0.6, "0.2 0.4 0.85 1")
     actuators = make_actuators("a_") + "\n" + make_actuators("b_")
 
     return f"""<mujoco model="fighter2d">

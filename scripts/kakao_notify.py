@@ -83,7 +83,7 @@ def send_message(text):
     template = json.dumps({
         "object_type": "text",
         "text": text,
-        "link": {"web_url": "", "mobile_web_url": ""},
+        "link": {},
     })
     body = urllib.parse.urlencode({"template_object": template}).encode()
     req = urllib.request.Request(
