@@ -16,6 +16,7 @@ import time
 from collections import deque
 
 import numpy as np
+import torch
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList, CheckpointCallback
 from stable_baselines3.common.env_util import make_vec_env
@@ -24,6 +25,19 @@ from stable_baselines3.common.vec_env import SubprocVecEnv
 from env import Fighter2DEnv, Fighter2DEnvForB
 
 MODELS_DIR = pathlib.Path(__file__).resolve().parent.parent / "checkpoints"
+
+# log_std has no ceiling in this project (ent_coef=0, no entropy-bonus push-back), so it just
+# decays every round -- measured per-dimension on a real checkpoint, some joints (mostly legs)
+# had already fallen to std~0.03-0.05 while others sat at 0.4+, well before the AGGREGATE std
+# logged during training looked alarming. That per-dimension collapse tracked directly with
+# fall-rate regressions across rounds (docs: std ~0.15->0.02 lined up with a 63%->81% fall-rate
+# swing). Tried fixing this with an entropy bonus once (ent_coef=0.01) -- it overshot into a
+# runaway positive-feedback loop instead (std -> 1.11e16 over 100 rounds, no ceiling of its own).
+# Clamping log_std directly after every round sidesteps needing that delicate a balance: a floor
+# guarantees a minimum of exploration/adaptability always survives, and a ceiling is just cheap
+# insurance against a repeat of the same runaway-growth failure mode.
+LOG_STD_MIN = np.log(0.05)   # std floor ~0.05 -- never fully deterministic
+LOG_STD_MAX = np.log(0.6)    # std ceiling ~0.6 -- guards against unbounded growth
 
 
 class OpponentRewardCallback(BaseCallback):
@@ -124,6 +138,13 @@ def main():
     try:
         model.learn(total_timesteps=args.timesteps, callback=callbacks, reset_num_timesteps=False)
     finally:
+        with torch.no_grad():
+            before = model.policy.log_std.data.clone()
+            model.policy.log_std.data.clamp_(min=LOG_STD_MIN, max=LOG_STD_MAX)
+            n_clamped = int((model.policy.log_std.data != before).sum())
+        if n_clamped:
+            print(f"[league] clamped log_std on {n_clamped}/{before.numel()} action dims "
+                  f"into [{np.exp(LOG_STD_MIN):.3f}, {np.exp(LOG_STD_MAX):.3f}] std range", flush=True)
         out_path = MODELS_DIR / run_name
         model.save(str(out_path))
         print(f"saved model to {out_path}.zip")

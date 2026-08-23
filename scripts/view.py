@@ -13,8 +13,8 @@ import numpy as np
 
 MODEL_PATH = pathlib.Path(__file__).resolve().parent.parent / "models" / "fighter2d.xml"
 
-JOINTS = ["head", "shoulder_r", "elbow_r", "shoulder_l", "elbow_l",
-          "hip_r", "knee_r", "hip_l", "knee_l"]
+JOINTS = ["waist", "head", "shoulder_r", "elbow_r", "shoulder_l", "elbow_l",
+          "hip_r", "knee_r", "ankle_r", "hip_l", "knee_l", "ankle_l"]
 
 
 def get_ctrl(t, phase=0.0):
@@ -22,6 +22,7 @@ def get_ctrl(t, phase=0.0):
     punch = 0.9 * max(0.0, np.sin(2.0 * t + phase))
     step = 0.5 * np.sin(1.3 * t + phase)
     return np.array([
+        0.2 * np.sin(2.0 * t + phase),        # waist: lean into the punch rhythm
         0.15 * np.sin(2.0 * t + phase),      # head bob
         punch,                                # shoulder_r swings out to punch
         -punch,                               # elbow_r extends with the punch
@@ -29,8 +30,10 @@ def get_ctrl(t, phase=0.0):
         -0.6,                                 # elbow_l stays bent (guard)
         step,                                  # hip_r
         -0.4 * max(0.0, np.sin(1.3 * t + phase)),  # knee_r
+        0.2 * np.sin(1.3 * t + phase),         # ankle_r: toe-off push synced with the knee/step
         -step,                                 # hip_l
         -0.4 * max(0.0, np.sin(1.3 * t + phase + np.pi)),  # knee_l
+        0.2 * np.sin(1.3 * t + phase + np.pi), # ankle_l
     ])
 
 

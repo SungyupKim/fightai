@@ -174,6 +174,9 @@
 
     <div class="panel full">
       <h2>리그 라운드별 매치업</h2>
+      <div class="legend" style="margin-bottom:8px;">
+        <span>런: <select id="in-league-run" style="min-width:220px;"></select></span>
+      </div>
       <div class="legend">
         <span><span class="swatch" style="background:#4f8cff"></span>P1(a) 패</span>
         <span><span class="swatch" style="background:#ffb454"></span>P2(b) 패</span>
@@ -710,8 +713,43 @@ function drawLeaguePostureChart(rounds) {
 }
 
 let lastLeagueRounds = [];
+let selectedLeagueRun = null; // null = latest (live-following); otherwise a run index
+let leagueRunOptionsKey = ''; // last-rendered run list, to avoid rebuilding (and losing focus) every poll
+
+async function refreshLeagueRunList() {
+  const { runs } = await api('/api/league_runs');
+  const key = JSON.stringify(runs);
+  if (key === leagueRunOptionsKey) return;
+  leagueRunOptionsKey = key;
+  const sel = $('in-league-run');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  const latestOpt = document.createElement('option');
+  latestOpt.value = '';
+  latestOpt.textContent = '최신 (실시간 추적)';
+  sel.appendChild(latestOpt);
+  (runs || []).slice().reverse().forEach(r => {
+    const opt = document.createElement('option');
+    opt.value = r.index;
+    const label = (r.p1 && r.p2) ? `${r.p1} vs ${r.p2}` : `런 ${r.index}`;
+    opt.textContent = `#${r.index} (${r.rounds}R) ${label}`;
+    sel.appendChild(opt);
+  });
+  // restore selection: prefer the explicit user choice, fall back to "latest"
+  sel.value = selectedLeagueRun === null ? '' : String(selectedLeagueRun);
+  if (sel.value === '' && prev !== '' && prev !== sel.value) sel.value = prev;
+}
+
+$('in-league-run').addEventListener('change', () => {
+  const v = $('in-league-run').value;
+  selectedLeagueRun = v === '' ? null : parseInt(v, 10);
+  refreshLeagueTrend();
+});
+
 async function refreshLeagueTrend() {
-  const { rounds } = await api('/api/league_trend');
+  await refreshLeagueRunList();
+  const qs = selectedLeagueRun === null ? '' : `?run=${selectedLeagueRun}`;
+  const { rounds } = await api('/api/league_trend' + qs);
   lastLeagueRounds = rounds || [];
   drawLeagueChart(lastLeagueRounds);
   drawLeaguePostureChart(lastLeagueRounds);
