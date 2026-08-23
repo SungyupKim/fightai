@@ -13,6 +13,7 @@ import pathlib
 import re
 import subprocess
 import time
+import urllib.request
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 MODELS_DIR = SCRIPTS.parent / "checkpoints"
@@ -39,6 +40,21 @@ def notify(msg):
         send_message(msg)
     except Exception as e:
         log(f"kakao notify failed: {e}")
+
+
+def restart_watch():
+    """Re-point the dashboard's sim viewer at each side's latest checkpoint after a round --
+    so the viewer always shows the current state without needing a manual "최신 시뮬 돌려줘"
+    each time. Best-effort: the league loop must keep going even if the dashboard is down."""
+    try:
+        body = json.dumps({"checkpoint": "__latest__", "opponent": "__latest__"}).encode()
+        req = urllib.request.Request(
+            "http://localhost:8787/api/watch/start", data=body,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception as e:
+        log(f"watch restart failed: {e}")
 
 
 def latest_ckpt(prefix):
@@ -157,6 +173,7 @@ def main():
             f"머리높이비율 a={result.get('mean_head_ratio_a', 0):.2f} b={result.get('mean_head_ratio_b', 0):.2f} · "
             f"std={std_txt}{std_warn}"
         )
+        restart_watch()
 
     log(f"all {args.rounds} rounds complete. P1={p1} P2={p2}")
     notify(f"[fightai] all {args.rounds} rounds complete. P1={p1} P2={p2}")

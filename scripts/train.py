@@ -1,4 +1,5 @@
-"""Trains fighter 'a' with PPO against the scripted shadow-boxing opponent 'b'."""
+"""Trains fighter 'a' or 'b' with PPO from scratch against the scripted shadow-boxing
+opponent on the other side."""
 import argparse
 import pathlib
 import time
@@ -8,13 +9,17 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
-from env import Fighter2DEnv
+from env import Fighter2DEnv, Fighter2DEnvForB
 
 MODELS_DIR = pathlib.Path(__file__).resolve().parent.parent / "checkpoints"
 
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--side", choices=["a", "b"], default="a",
+                         help="which physical role this run's policy controls -- 'b' trains "
+                              "against the scripted 'a' motion the same way the default 'a' "
+                              "trains against scripted 'b'")
     parser.add_argument("--timesteps", type=int, default=20_000)
     parser.add_argument("--n-envs", type=int, default=8)
     parser.add_argument("--device", type=str, default="cuda")
@@ -31,7 +36,8 @@ def main():
     run_id = time.strftime("%Y%m%d_%H%M%S")
     run_name = f"{args.out}_{run_id}"
 
-    vec_env = make_vec_env(Fighter2DEnv, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv)
+    env_cls = Fighter2DEnv if args.side == "a" else Fighter2DEnvForB
+    vec_env = make_vec_env(env_cls, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv)
 
     if args.resume_from:
         model = PPO.load(args.resume_from, env=vec_env, device=args.device)

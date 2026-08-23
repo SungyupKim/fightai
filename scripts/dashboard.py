@@ -102,22 +102,57 @@ DONE_RE = re.compile(r"^\[dynamic\] round (\d+)/\d+: side=(\w) done in \d+s .* s
 HITS_RE = re.compile(r"^\[dynamic\] round (\d+)/\d+: hits_a=([\w.None]+) hits_b=([\w.None]+)")
 
 
-def parse_league_trend():
-    """Round-by-round P1/P2 matchup history for the dashboard chart. The dynamic
-    league loop always appends to this one canonical log path regardless of which
-    wrapper/relaunch started it (see selfplay_league_dynamic.py's LOG_PATH), so a
-    fresh run restarts its round numbering from 1 in the same file -- only the
-    lines after the LAST "round 1/" line belong to the current run."""
+RUN_START_RE = re.compile(r"^\[dynamic\] round 1/\d+: matchup")
+INIT_CKPT_RE = re.compile(r"-- P1=(\S+) P2=(\S+)")
+
+
+def _all_dynamic_lines():
     try:
         lines = LEAGUE_LOG_PATH.read_text(errors="ignore").splitlines()
     except OSError:
         return []
-    dynamic_lines = [l for l in lines if l.startswith("[dynamic]")]
-    last_start = 0
-    for i, l in enumerate(dynamic_lines):
-        if re.match(r"^\[dynamic\] round 1/\d+: matchup", l):
-            last_start = i
-    dynamic_lines = dynamic_lines[last_start:]
+    return [l for l in lines if l.startswith("[dynamic]")]
+
+
+def _run_segments(dynamic_lines):
+    """Split the log into (start, end) index ranges, one per league run -- a fresh
+    run restarts its round numbering from 1 in the same accumulating log file, so
+    each "round 1/" line marks a new run's start."""
+    starts = [i for i, l in enumerate(dynamic_lines) if RUN_START_RE.match(l)]
+    if not starts:
+        return []
+    return [(s, (starts[i + 1] if i + 1 < len(starts) else len(dynamic_lines)))
+            for i, s in enumerate(starts)]
+
+
+def list_league_runs():
+    """One entry per league run found in the log, oldest first, for the dashboard's
+    run picker -- labeled with the round-1 P1/P2 checkpoint basenames since the log
+    has no wall-clock timestamps."""
+    dynamic_lines = _all_dynamic_lines()
+    segments = _run_segments(dynamic_lines)
+    runs = []
+    for idx, (start, end) in enumerate(segments):
+        p1 = p2 = None
+        m = INIT_CKPT_RE.search(dynamic_lines[start])
+        if m:
+            p1 = pathlib.Path(m.group(1)).name
+            p2 = pathlib.Path(m.group(2)).name
+        n_rounds = sum(1 for l in dynamic_lines[start:end] if MATCHUP_RE.match(l))
+        runs.append({"index": idx, "p1": p1, "p2": p2, "rounds": n_rounds})
+    return runs
+
+
+def parse_league_trend(run_index=None):
+    """Round-by-round P1/P2 matchup history for the dashboard chart. `run_index`
+    selects which league run (see list_league_runs) to show -- None/omitted means
+    the latest (default, live-following) run."""
+    dynamic_lines = _all_dynamic_lines()
+    segments = _run_segments(dynamic_lines)
+    if not segments:
+        return []
+    start, end = segments[run_index] if run_index is not None else segments[-1]
+    dynamic_lines = dynamic_lines[start:end]
 
     def _float_or_none(s):
         try:
@@ -258,7 +293,15 @@ class Handler(BaseHTTPRequestHandler):
                 "available_metrics": CHART_METRICS,
             })
         elif path == "/api/league_trend":
-            self._json({"rounds": parse_league_trend()})
+            qs = parse_qs(urlparse(self.path).query)
+            run = qs.get("run", [None])[0]
+            try:
+                run_index = int(run) if run is not None else None
+            except ValueError:
+                return self._json({"error": "invalid run"}, 400)
+            self._json({"rounds": parse_league_trend(run_index)})
+        elif path == "/api/league_runs":
+            self._json({"runs": list_league_runs()})
         else:
             self.send_response(404)
             self.end_headers()

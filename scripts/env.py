@@ -24,7 +24,10 @@ FALL_HEIGHT = 0.55
 FALL_PENALTY = 50.0            # solo KO at episode end: winner +, loser -
 MUTUAL_FALL_PENALTY = 20.0     # both KO'd simultaneously -- discourages trading a knockdown blow
                                 # instead of sustained sparring
-DOWN_RECOVERY_STEPS = 150      # ~3s (FRAME_SKIP*timestep=0.02s/step) to get back up before it's a real KO
+DOWN_RECOVERY_STEPS = 250      # ~5s (FRAME_SKIP*timestep=0.02s/step) to get back up before it's a real KO --
+                                # raised from 150(~3s) to give the new `recovery` reward's target
+                                # behavior (actively standing back up) more room to actually work
+                                # before the episode ends regardless.
 KNOCKDOWN_ENTRY_PENALTY = 30.0 # one-time cost the *instant* you go down -- discourages ever diving in
                                 # for a hit, independent of how long you stay down
 DOWN_PENALTY_SCALE = 2.0       # ongoing per-step cost while down, proportional to how far below
@@ -83,20 +86,17 @@ PROGRESS_REWARD_SCALE = 2.0    # bonus for REDUCING foot_dist this step (previou
                                 # up instead of just tolerating the larger static cost.
 B_APPROACH_GAIN = 1.5          # scripted opponent's proportional gain for walking toward 'a'
 
-A_MIRROR_AUGMENT_PROB = 0.5    # fraction of episodes where 'a's own observation/action is routed
-                                # through the same left-right mirror transform used for 'b'. Only 'a'
-                                # ever receives gradient updates -- 'b' is always a frozen snapshot --
-                                # so without this, the policy only ever trains on the raw (unmirrored)
-                                # frame. A diagnostic (diag_engage.py) found the trained policy is NOT
-                                # actually mirror-equivariant despite the physics/geometry being fully
-                                # symmetric: in mirror self-play matches, 'a' self-destabilized in
-                                # ~38/40 episodes vs 'b' in ~2/40, and the gap survived every structural
-                                # ablation tried (swapping physical side, swapping MuJoCo body/geom
-                                # compile order, forcing both sides through an identical predict() call
-                                # structure) -- so it's specifically the network's behavior under the
-                                # mirrored observation, not any of those. Randomly mirroring 'a's own
-                                # view/action during training gives the mirrored frame direct gradient
-                                # exposure instead of leaving it entirely unoptimized.
+# The whole "mirror b's observation/action into a's frame" apparatus that used to live here
+# (A_MIRROR_AUGMENT_PROB, _a_mirror, _qpos_mirror, _action_mirror) is gone. It existed to let a
+# SINGLE shared policy generalize across both physical sides -- but it never fully worked (see
+# docs/기술문서 section 4/19), and the sign-flip trick it used was never actually correct for
+# asymmetric-range joints like the knee/elbow (mirroring an angle constrained to [-140,0] by
+# negating it lands outside the joint's own range -- confirmed: a trained b policy's knee-kick
+# physically swung toward its OWN side, away from the opponent). Now that P1 ('a') and P2 ('b')
+# are fully independent networks (2.11절), there's no shared-policy generalization problem left
+# to solve this way. b's body is instead a true mirror image of a's (build_model.py flips every
+# joint's rotation axis for b), and each side just observes/acts in its own natural, unmirrored
+# frame -- structurally symmetric, no runtime sign-flip translation layer needed.
 
 
 # ---- balance assist (physics, not reward) ----
@@ -175,7 +175,7 @@ Z_VEL_REF = 1.0
 # (feet together most of the time), p90~0.68m (only during kicks/punches, not sustained). Capped
 # at ratio 1.0 like height, so it stops rewarding past a normal stance width instead of pushing
 # toward an ever-wider (eventually anatomically absurd) split.
-STANCE_REWARD_SCALE = 0.15
+STANCE_REWARD_SCALE = 0.25
 STANCE_GAP_REF = 0.4
 
 # Reward for keeping knees off the ground. First version used the existing contact-based
@@ -189,10 +189,17 @@ STANCE_GAP_REF = 0.4
 # stance near the ratio-1 ceiling. Uses the MINIMUM of the two knees (not the average) so one
 # knee sinking can't be masked by the other staying up -- matches the visual "kneeling" cue,
 # where even one knee down is the thing to avoid.
-KNEE_AVOID_SCALE = 0.15
+KNEE_AVOID_SCALE = 0.25
 KNEE_HEIGHT_REF = 0.4
 
-# Tried a flat per-step "alive cost" to break passive standoffs (nothing in strike/engage/
+# Recovery bonus: height reward is SCALE*ratio^2, so its gradient (2*ratio) is weakest exactly
+# when ratio is near 0 -- lying on the ground, the state where getting up matters most, barely
+# moves the reward at all. Only a "down_timeout" (failing to recover within DOWN_RECOVERY_STEPS)
+# actually ends the episode, so there's real value in rewarding the ACT of standing back up
+# quickly, not just eventually being tall again. Rewards upward root_z velocity, weighted by how
+# far from standing the head currently is (so it's ~0 once already upright -- doesn't reward
+# bouncing/jumping when there's nothing to recover from). Always >= 0, cliff-free.
+RECOVERY_REWARD_SCALE = 0.5
 # progress/height pushes toward actually attacking once already close). Both scales tried (0.1,
 # 0.03) made things worse, not better -- engagement dropped (66.7% -> 56.7% -> 43.3%) and height
 # fell back toward the crouch (0.92 -> 0.62 -> 0.56) instead of improving. Reverted; passive
@@ -220,8 +227,15 @@ ARM_MIN_POWER = 0.4
 # read as a "fall" even though root_ry/balance never actually went unstable). Tapering
 # power at the extremes, same as the arms already do, should make holding that pinned
 # position costlier than easing off.
-LEG_JOINTS = ["hip_r", "knee_r", "hip_l", "knee_l"]
-LEG_MIN_POWER = 0.4
+#
+# Raised 0.4 -> 1.0 (i.e. disabled the taper entirely): a knee deeply bent from a fall is
+# ALSO "near the extreme" of its range, and that's exactly the position standing back up
+# needs maximum extensor torque from -- the taper was cutting leg power to 40% right when
+# recovery needed it most. Trades away the original hip-pinning fix this curve was added
+# for; watch whether that specific pattern (hip slammed to its limit, read as a fake fall)
+# comes back now that legs have full power everywhere.
+LEG_JOINTS = ["hip_r", "knee_r", "ankle_r", "hip_l", "knee_l", "ankle_l"]
+LEG_MIN_POWER = 1.0
 
 # Tried gating root_x thrust by leg stride split (force stepping instead of a free torso
 # slide) -- measured it actually made the vs-scripted-bot fall rate WORSE (43% -> 57%,
@@ -282,14 +296,6 @@ class Fighter2DEnv(gym.Env):
 
         self.a_qpos_idx, self.a_qvel_idx = qidx("a_")
         self.b_qpos_idx, self.b_qvel_idx = qidx("b_")
-        # every joint here (root_ry + all 9 limb joints) rotates about the Y axis, same
-        # as root_x's translation axis is X. Under a true left-right mirror reflection
-        # (X -> -X), root_x AND every Y-axis rotation flip sign -- only root_z (height)
-        # doesn't. [root_x, root_z, root_ry, <9 joints>] -> only index 1 stays +1.
-        self._qpos_mirror = np.array([-1.0, 1.0] + [-1.0] * (1 + len(JOINTS)))
-        # the action vector is [root_x thrust, <9 joint torques>] -- no height-equivalent
-        # unactuated slot, so every entry flips under the same reflection.
-        self._action_mirror = -np.ones(len(JOINTS) + 1)
 
         self.a_torso_id = self.model.body("a_torso").id
         self.b_torso_id = self.model.body("b_torso").id
@@ -319,12 +325,23 @@ class Fighter2DEnv(gym.Env):
         def targets_by_part(prefix):
             return {
                 "head": {self.model.geom(f"{prefix}head").id},
-                "torso": {self.model.geom(f"{prefix}torso").id},
+                # "torso" used to be one rigid geom; splitting it for the waist joint means a
+                # torso-region hit can land on either half now.
+                "torso": {self.model.geom(f"{prefix}{g}").id for g in ("chest", "pelvis")},
                 "leg": {self.model.geom(f"{prefix}{g}").id for g in ("thigh_r", "thigh_l", "shin_r", "shin_l")},
             }
 
         self.a_targets = targets_by_part("a_")
         self.b_targets = targets_by_part("b_")
+
+        # every geom on each fighter, floor excluded -- used to detect the two fighters
+        # physically touching each other at all (clinch/collapsed-together/leaning), not just
+        # a weapon-target strike, so a downed fighter still tangled up with their opponent
+        # isn't treated the same as one lying alone on the canvas.
+        self.a_body_geoms = {self.model.geom(i).id for i in range(self.model.ngeom)
+                              if self.model.geom(i).name.startswith("a_")}
+        self.b_body_geoms = {self.model.geom(i).id for i in range(self.model.ngeom)
+                              if self.model.geom(i).name.startswith("b_")}
 
         obs_dim = len(self.a_qpos_idx) + len(self.a_qvel_idx) + \
                   len(self.b_qpos_idx) + len(self.b_qvel_idx) + 6
@@ -339,7 +356,6 @@ class Fighter2DEnv(gym.Env):
         self._prev_contact_pairs = {"a_punch": set(), "a_kick": set(), "b_punch": set(), "b_kick": set()}
         self._prev_a_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
         self._prev_b_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
-        self._a_mirror = False
         self._t = 0.0
 
         if opponent_policy_path:
@@ -356,41 +372,30 @@ class Fighter2DEnv(gym.Env):
 
     def _obs_view(self, self_qpos_idx, self_qvel_idx, opp_qpos_idx, opp_qvel_idx,
                   self_torso_id, opp_torso_id, self_health, opp_health,
-                  self_stagger, opp_stagger, mirror):
+                  self_stagger, opp_stagger):
         """Builds an observation from one fighter's own point of view -- shared by both
-        _obs() (a, optionally mirrored for augmentation) and _obs_for_b() (b, always
-        mirrored). With mirror=True this is a true left-right mirror reflection (X ->
-        -X) of the raw physical state: root_x flips (translation along the flipped
-        axis), root_z doesn't (height is unaffected by an X-reflection), and root_ry +
-        every limb joint flip too, since they're all rotations about the Y axis and
-        reflection reverses the sign of any rotation about an axis lying in the mirror
-        plane. Without the joint half of this, b's punches/kicks used the same
-        absolute-direction convention as a's whether or not that was correct for b's
-        actual position -- verified this measurably weakened (not eliminated) b's
-        offense (658.9 dealt by a vs 116.8 by b over 40 episodes)."""
+        _obs() (a) and _obs_for_b() (b). Both bodies encode their own "forward" direction
+        directly in their physical geometry/joint axes (build_model.py mirrors b), so this
+        is just the raw state, no sign-flip translation needed for either side."""
         sx, sz = self.data.xpos[self_torso_id][[0, 2]]
         ox, oz = self.data.xpos[opp_torso_id][[0, 2]]
-        sign = -1.0 if mirror else 1.0
         extra = np.array([
-            sign * (ox - sx), oz - sz,
+            ox - sx, oz - sz,
             self_health / 100.0, opp_health / 100.0,
             self_stagger, opp_stagger,
         ])
-        m = self._qpos_mirror if mirror else 1.0
-        self_qpos = self.data.qpos[self_qpos_idx] * m
-        self_qvel = self.data.qvel[self_qvel_idx] * m
-        opp_qpos = self.data.qpos[opp_qpos_idx] * m
-        opp_qvel = self.data.qvel[opp_qvel_idx] * m
+        self_qpos = self.data.qpos[self_qpos_idx]
+        self_qvel = self.data.qvel[self_qvel_idx]
+        opp_qpos = self.data.qpos[opp_qpos_idx]
+        opp_qvel = self.data.qvel[opp_qvel_idx]
         return np.concatenate([self_qpos, self_qvel, opp_qpos, opp_qvel, extra]).astype(np.float32)
 
     def _obs_for_b(self):
-        """'b's point of view: 'b' is self, 'a' is the opponent. 'b' starts on the
-        opposite side from 'a', so this is always the mirrored view (see _obs_view)."""
+        """'b's point of view: 'b' is self, 'a' is the opponent."""
         return self._obs_view(
             self.b_qpos_idx, self.b_qvel_idx, self.a_qpos_idx, self.a_qvel_idx,
             self.b_torso_id, self.a_torso_id,
             self.health["b"], self.health["a"], self.stagger["b"], self.stagger["a"],
-            mirror=True,
         )
 
     def _contact_damage_by_part(self, weapons, targets_by_part, prev_pairs):
@@ -437,13 +442,11 @@ class Fighter2DEnv(gym.Env):
         return min(feet_planted, 2), min(knees_down, 2)
 
     def _obs(self):
-        """'a's point of view. Mirrored (self._a_mirror, re-rolled each reset) on a
-        random fraction of episodes -- see A_MIRROR_AUGMENT_PROB."""
+        """'a's point of view."""
         return self._obs_view(
             self.a_qpos_idx, self.a_qvel_idx, self.b_qpos_idx, self.b_qvel_idx,
             self.a_torso_id, self.b_torso_id,
             self.health["a"], self.health["b"], self.stagger["a"], self.stagger["b"],
-            mirror=self._a_mirror,
         )
 
     def reset(self, seed=None, options=None):
@@ -459,7 +462,6 @@ class Fighter2DEnv(gym.Env):
         self._prev_contact_pairs = {"a_punch": set(), "a_kick": set(), "b_punch": set(), "b_kick": set()}
         self._prev_a_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
         self._prev_b_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
-        self._a_mirror = bool(self.np_random.random() < A_MIRROR_AUGMENT_PROB)
         self._t = 0.0
         a_foot_xs = [self.data.site_xpos[s][0] for s in self.a_feet]
         b_foot_xs = [self.data.site_xpos[s][0] for s in self.b_feet]
@@ -477,28 +479,30 @@ class Fighter2DEnv(gym.Env):
         return min_power + (1.0 - min_power) * np.sin(np.pi * frac)
 
     def step(self, action, b_full_action=None):
-        """b_full_action: pass a real action (in b's own mirrored-frame convention, same
-        as _obs_for_b()'s caller would produce) to drive 'b' directly instead of querying
-        self.opponent_policy -- used by the paired self-play VecEnv, where 'b' is the SAME
-        live policy being trained rather than a frozen snapshot."""
-        action = np.clip(action, -1.0, 1.0)
-        jerk_penalty = JERK_PENALTY_SCALE * np.sum((action - self._prev_a_action) ** 2)
-        self._prev_a_action = action.copy()
-        # 'action' is in whatever frame _obs() presented to the policy this episode (see
-        # A_MIRROR_AUGMENT_PROB) -- flip it back to real ctrl-space before applying, same
-        # as 'b's action is always flipped back below.
-        real_action = action * self._action_mirror if self._a_mirror else action
-        a_root_action, a_joint_action = real_action[0], real_action[1:]
+        """b_full_action: pass a real action (in b's own frame, same as _obs_for_b()'s caller
+        would produce) to drive 'b' directly instead of querying self.opponent_policy -- used
+        by the paired self-play VecEnv, where 'b' is the SAME live policy being trained rather
+        than a frozen snapshot.
+        action: None falls back to the scripted shadow-boxing motion for 'a' (mirrors the
+        existing b_full_action=None fallback below) -- used by Fighter2DEnvForB to train 'b'
+        from scratch against a scripted 'a', the same way train.py trains 'a' from scratch
+        against a scripted 'b'."""
+        if action is not None:
+            action = np.clip(action, -1.0, 1.0)
+            jerk_penalty = JERK_PENALTY_SCALE * np.sum((action - self._prev_a_action) ** 2)
+            self._prev_a_action = action.copy()
+            a_root_action_fixed, a_joint_action = action[0], action[1:]
+        else:
+            a_root_action_fixed = None
+            a_joint_action = get_ctrl(self._t, phase=0.0)
+            jerk_penalty = None
 
         if b_full_action is None and self.opponent_policy is not None:
             b_full_action, _ = self.opponent_policy.predict(self._obs_for_b(), deterministic=False)
 
         if b_full_action is not None:
             b_full_action = np.clip(b_full_action, -1.0, 1.0)
-            # the whole action (root thrust + every joint torque) comes back in the mirrored
-            # frame -- flip all of it to get 'b's real ctrl (see _obs_for_b for why)
-            b_real_action = b_full_action * self._action_mirror
-            b_root_action_fixed, b_ctrl = b_real_action[0], b_real_action[1:]
+            b_root_action_fixed, b_ctrl = b_full_action[0], b_full_action[1:]
             b_jerk_penalty = JERK_PENALTY_SCALE * np.sum((b_full_action - self._prev_b_action) ** 2)
             self._prev_b_action = b_full_action.copy()
         else:
@@ -520,6 +524,10 @@ class Fighter2DEnv(gym.Env):
 
             ax = self.data.xpos[self.a_torso_id][0]
             bx = self.data.xpos[self.b_torso_id][0]
+            if a_root_action_fixed is not None:
+                a_root_action = a_root_action_fixed
+            else:
+                a_root_action = np.clip((bx - ax) * B_APPROACH_GAIN, -1.0, 1.0)
             self.data.ctrl[self.a_root_act] = np.clip(a_root_action * a_authority, -1.0, 1.0)
             if b_root_action_fixed is not None:
                 b_root_action = b_root_action_fixed
@@ -565,8 +573,31 @@ class Fighter2DEnv(gym.Env):
         b_z = self.data.xpos[self.b_torso_id][2]
         a_down_now = a_z < FALL_HEIGHT
         b_down_now = b_z < FALL_HEIGHT
-        self.down_steps["a"] = self.down_steps["a"] + 1 if a_down_now else 0
-        self.down_steps["b"] = self.down_steps["b"] + 1 if b_down_now else 0
+        # a downed fighter who still lands a hit (e.g. a sweep/kick from the ground) is clearly
+        # still in the fight, not just lying there for the count -- reset their own down clock
+        # instead of letting it keep ticking toward an out. (Getting hit WHILE down doesn't reset
+        # it -- that would perversely let the attacker's own blows save the downed fighter.)
+        a_landed_hit = sum(dmg_to_b.values()) > 0
+        b_landed_hit = sum(dmg_to_a.values()) > 0
+        # the two fighters physically touching (clinch, tangled together, leaning/collapsed on
+        # each other) also pauses the clock, same as landing a hit -- a low torso mid-exchange
+        # against an opponent right there isn't the same thing as lying alone on the canvas, and
+        # this covers ongoing contact (no new-contact-damage requirement) that a_landed_hit/
+        # b_landed_hit alone can't see. Symmetric -- contact isn't "caused" by one side, so it
+        # pauses both down clocks the same way.
+        mutual_contact = any(
+            (c.geom1 in self.a_body_geoms and c.geom2 in self.b_body_geoms)
+            or (c.geom2 in self.a_body_geoms and c.geom1 in self.b_body_geoms)
+            for c in self.data.contact[:self.data.ncon]
+        )
+        if a_down_now and not a_landed_hit and not mutual_contact:
+            self.down_steps["a"] += 1
+        else:
+            self.down_steps["a"] = 0
+        if b_down_now and not b_landed_hit and not mutual_contact:
+            self.down_steps["b"] += 1
+        else:
+            self.down_steps["b"] = 0
 
         # a knockdown is recoverable (get back above FALL_HEIGHT) unless it drags on
         # too long or health hits zero, either of which counts as being knocked out
@@ -607,6 +638,11 @@ class Fighter2DEnv(gym.Env):
         a_height_reward = HEAD_HEIGHT_REWARD_SCALE * min(HEAD_HEIGHT_RATIO_CAP, max(0.0, a_head_z / STANDING_HEAD_HEIGHT)) ** 2
         b_height_reward = HEAD_HEIGHT_REWARD_SCALE * min(HEAD_HEIGHT_RATIO_CAP, max(0.0, b_head_z / STANDING_HEAD_HEIGHT)) ** 2
 
+        a_up_vel = max(0.0, self.data.qvel[self.a_z_dof])
+        b_up_vel = max(0.0, self.data.qvel[self.b_z_dof])
+        a_recovery_reward = RECOVERY_REWARD_SCALE * a_up_vel * max(0.0, 1.0 - a_head_z / STANDING_HEAD_HEIGHT)
+        b_recovery_reward = RECOVERY_REWARD_SCALE * b_up_vel * max(0.0, 1.0 - b_head_z / STANDING_HEAD_HEIGHT)
+
         a_z_down_vel = max(0.0, -self.data.qvel[self.a_z_dof])
         b_z_down_vel = max(0.0, -self.data.qvel[self.b_z_dof])
         a_stability_reward = STABILITY_REWARD_SCALE * max(0.0, 1.0 - a_z_down_vel / Z_VEL_REF) ** 2
@@ -634,6 +670,7 @@ class Fighter2DEnv(gym.Env):
             "stability": a_stability_reward,
             "stance": a_stance_reward,
             "knee_avoid": a_knee_avoid_reward,
+            "recovery": a_recovery_reward,
         }
 
         # mirrored reward from 'b's own point of view (self-play only, since the scripted
@@ -648,6 +685,7 @@ class Fighter2DEnv(gym.Env):
                 "stability": b_stability_reward,
                 "stance": b_stance_reward,
                 "knee_avoid": b_knee_avoid_reward,
+                "recovery": b_recovery_reward,
             }
         else:
             reward_terms_b = None
@@ -705,10 +743,11 @@ class Fighter2DEnvForB(Fighter2DEnv):
 
     def step(self, action):
         action = np.clip(action, -1.0, 1.0)
-        if self.opponent_policy is None:
-            raise RuntimeError("Fighter2DEnvForB requires a frozen 'a' opponent -- call set_opponent() first")
-        a_action, _ = self.opponent_policy.predict(self._obs(), deterministic=False)
-        a_action = np.clip(a_action, -1.0, 1.0)
+        if self.opponent_policy is not None:
+            a_action, _ = self.opponent_policy.predict(self._obs(), deterministic=False)
+            a_action = np.clip(a_action, -1.0, 1.0)
+        else:
+            a_action = None  # falls back to scripted 'a' in the base step()
         _, reward_a, terminated, truncated, info = super().step(a_action, b_full_action=action)
         obs_b = self._obs_for_b()
         reward_b = info["reward_b"]
