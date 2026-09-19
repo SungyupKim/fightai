@@ -20,6 +20,20 @@ FRAME_SKIP = 4
 MAX_STEPS = 1000               # longer cap so recoverable knockdowns have room to play out
 FALL_HEIGHT = 0.55
 
+# ---- get-up curriculum ----
+# Measured: even with RECOVERY_REWARD_SCALE raised, a downed fighter's legs/waist were already
+# actively moving (mean |ctrl| ~0.63, not passive) but almost never producing real upward
+# velocity (only ~4-5% of down-steps) -- an exploration problem, not a reward-magnitude one.
+# Standing up is a rare side effect of losing a fight mid-training, so there's barely any
+# concentrated practice at it. Occasionally starting an episode already collapsed gives it that
+# practice directly instead of waiting for it to happen by accident.
+GETUP_CURRICULUM_PROB = 0.25   # fraction of episodes, per fighter independently, that start down
+GETUP_SETTLE_STEPS = 300       # physics-only (zero ctrl) steps so gravity actually finishes folding
+                                # the bent-knee starting pose down to the ground (measured: 60 steps
+                                # left it barely settled, still above FALL_HEIGHT 100% of the time;
+                                # 300 steps ~1.5s gets ~41% below it, matching the ~44% expected from
+                                # GETUP_CURRICULUM_PROB on two independent fighters)
+
 # ---- knockdown / fall mechanics ----
 FALL_PENALTY = 50.0            # solo KO at episode end: winner +, loser -
 MUTUAL_FALL_PENALTY = 20.0     # both KO'd simultaneously -- discourages trading a knockdown blow
@@ -67,7 +81,13 @@ EFFORT_COST = 0.01             # back to the original value. Raised in steps (0.
                                 # showed it was ~-250/episode, over 75% of total reward and dwarfing the
                                 # +5/episode strike signal. It never worked and was drowning out the
                                 # actual combat signal, so reverting rather than tuning it further.
-JERK_PENALTY_SCALE = 0.02      # cost on action change frame-to-frame, discourages full-power reversals
+JERK_PENALTY_SCALE = 0.01      # cost on action change frame-to-frame, discourages full-power reversals.
+                                # 0.02->0.01: measured a big jump in "frozen pose" steps after adding
+                                # this (5.2%->14.4% of steps, longest freeze ~15s) -- "stay still" costs
+                                # exactly 0 regardless of scale, so a smaller scale narrows the gap
+                                # between that and "make a small useful movement" without changing the
+                                # RELATIVE cost of a big reversal vs a small adjustment (it's squared, so
+                                # a launch-sized delta stays proportionally far more expensive either way).
                                 # (e.g. root thrust +1 -> -1 in one step)
 ENGAGE_PENALTY_SCALE = 0.5     # cost on log1p(foot distance) every step -- always some gradient to
                                 # close in (no free zone), steepest near contact range and flattening
@@ -246,13 +266,23 @@ LEG_MIN_POWER = 1.0
 class Fighter2DEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, render_mode=None, opponent_policy_path=None):
+    def __init__(self, render_mode=None, opponent_policy_path=None, getup_curriculum_prob=None):
         super().__init__()
         self.model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
         self.data = mujoco.MjData(self.model)
         self.render_mode = render_mode
         self.opponent_policy = None
         self._viewer = None
+        # None -> module default (training). Eval/matchup scripts pass 0.0 explicitly -- a
+        # ~44% chance of starting an episode already collapsed is exactly what training wants
+        # (docs 10.23) but silently corrupts a fall-rate measurement: matchup_eval.py used to
+        # reuse this same env unconditionally, so a big chunk of "down_timeout" losses in every
+        # matchup/league round were fights that started pre-fallen, not fights the policy
+        # actually lost through play -- inflating the measured fall rate independent of any real
+        # change in fighting quality.
+        self._getup_curriculum_prob = (
+            GETUP_CURRICULUM_PROB if getup_curriculum_prob is None else getup_curriculum_prob
+        )
 
         self.a_act = np.array([self.model.actuator(f"a_{j}").id for j in JOINTS])
         self.b_act = np.array([self.model.actuator(f"b_{j}").id for j in JOINTS])
@@ -449,12 +479,45 @@ class Fighter2DEnv(gym.Env):
             self.health["a"], self.health["b"], self.stagger["a"], self.stagger["b"],
         )
 
+    def _collapse_pose(self, prefix):
+        """Randomizes one fighter's leg/waist joints toward a bent/crumpled configuration,
+        starting from standing height -- gravity does the actual collapsing during the settle
+        steps (see GETUP_CURRICULUM_PROB). Forcing root_z down directly instead (first version)
+        started the ragdoll already interpenetrating the floor, which MuJoCo's contact solver
+        resolved with a violent corrective impulse -- ~25% of "collapsed" resets ended up
+        launched into the air (z>1.3, some past z=3.5) instead of settled on the ground. Bending
+        toward the ground from a valid standing pose never interpenetrates in the first place."""
+        for j, frac in (("hip_r", 0.6), ("hip_l", 0.6), ("waist", 0.6)):
+            qpos = self.model.joint(f"{prefix}{j}").qposadr[0]
+            lo, hi = self.model.joint(f"{prefix}{j}").range
+            self.data.qpos[qpos] = self.np_random.uniform(lo * frac, hi * frac)
+        for j in ("knee_r", "knee_l"):
+            qpos = self.model.joint(f"{prefix}{j}").qposadr[0]
+            lo, _hi = self.model.joint(f"{prefix}{j}").range  # e.g. [-140, 0] -- biased toward bent
+            self.data.qpos[qpos] = self.np_random.uniform(lo * 0.7, 0.0)
+        for j in ("ankle_r", "ankle_l"):
+            qpos = self.model.joint(f"{prefix}{j}").qposadr[0]
+            lo, hi = self.model.joint(f"{prefix}{j}").range
+            self.data.qpos[qpos] = self.np_random.uniform(lo, hi)
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         mujoco.mj_resetData(self.model, self.data)
         noise = self.np_random.uniform(-0.05, 0.05, size=self.model.nq)
         self.data.qpos[:] += noise
         mujoco.mj_forward(self.model, self.data)
+
+        prone_prefixes = [p for p in ("a_", "b_") if self.np_random.random() < self._getup_curriculum_prob]
+        if prone_prefixes:
+            for prefix in prone_prefixes:
+                self._collapse_pose(prefix)
+            mujoco.mj_forward(self.model, self.data)
+            saved_ctrl = self.data.ctrl.copy()
+            self.data.ctrl[:] = 0.0
+            for _ in range(GETUP_SETTLE_STEPS):
+                mujoco.mj_step(self.model, self.data)
+            self.data.ctrl[:] = saved_ctrl
+
         self.step_count = 0
         self.health = {"a": 100.0, "b": 100.0}
         self.stagger = {"a": 0.0, "b": 0.0}
@@ -662,6 +725,14 @@ class Fighter2DEnv(gym.Env):
         # it); falling is now only discouraged indirectly, by forfeiting height+strike reward
         # while down, not via a direct terminal penalty -- kept as the single source of truth
         # (reward = sum of these) so the breakdown in `info` can never drift from the total.
+        # jerk WAS actually dropped here (that's what the comment above says), but
+        # jerk_penalty/b_jerk_penalty kept being computed above anyway and just silently
+        # discarded -- dead code left over from before the simplification. Re-added below: with
+        # no cost on frame-to-frame action reversals, a leg actuator slamming from -1.0 to 1.0
+        # is free, and that's exactly the signature behind the ankle/knee "launch" falls (docs
+        # 10.18/10.22) -- ctrl snapping to the opposite extreme while the foot's planted, sending
+        # the torso flying. jerk_penalty is None only when action is None (Fighter2DEnvForB's
+        # scripted-'a' fallback), where reward_terms itself is never used as a training signal.
         reward_terms = {
             "strike": strike_reward * DAMAGE_REWARD_SCALE,
             "engage": -engage_penalty,
@@ -671,6 +742,7 @@ class Fighter2DEnv(gym.Env):
             "stance": a_stance_reward,
             "knee_avoid": a_knee_avoid_reward,
             "recovery": a_recovery_reward,
+            "jerk": -(jerk_penalty if jerk_penalty is not None else 0.0),
         }
 
         # mirrored reward from 'b's own point of view (self-play only, since the scripted
@@ -686,6 +758,7 @@ class Fighter2DEnv(gym.Env):
                 "stance": b_stance_reward,
                 "knee_avoid": b_knee_avoid_reward,
                 "recovery": b_recovery_reward,
+                "jerk": -b_jerk_penalty,
             }
         else:
             reward_terms_b = None

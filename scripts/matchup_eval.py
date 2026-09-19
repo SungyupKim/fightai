@@ -23,7 +23,10 @@ from env import Fighter2DEnv, STANDING_HEAD_HEIGHT
 
 def _make_env(checkpoint_b):
     def _init():
-        return Fighter2DEnv(opponent_policy_path=checkpoint_b)
+        # getup_curriculum_prob=0.0: always start standing -- the curriculum (env.py's
+        # GETUP_CURRICULUM_PROB) is a training-time device, and letting it leak into eval
+        # silently inflates the measured fall rate with episodes that started pre-collapsed.
+        return Fighter2DEnv(opponent_policy_path=checkpoint_b, getup_curriculum_prob=0.0)
     return _init
 
 
@@ -75,6 +78,16 @@ def main():
                 reason = "a_down_timeout"
             elif info["b_out"]:
                 reason = "b_down_timeout"
+            # no KO/down-timeout by MAX_STEPS -- decide it on points (remaining health), like a
+            # real bout going the distance, instead of leaving it uncounted as a draw. This used
+            # to just be "truncated" for every non-decisive episode, but that fraction has grown
+            # a lot since the mutual-contact down-clock pause (episodes run longer now) -- without
+            # this, the league's a_losses/b_losses tally (which decides who trains next round)
+            # was blind to an increasingly large share of episodes.
+            elif info["health_a"] > info["health_b"]:
+                reason = "a_win_decision"
+            elif info["health_b"] > info["health_a"]:
+                reason = "b_win_decision"
             else:
                 reason = "truncated"
             end_reasons.append(reason)
@@ -92,8 +105,8 @@ def main():
     health_b_end = health_b_end[:args.episodes]
 
     counts = dict(Counter(end_reasons))
-    a_losses = counts.get("a_down_timeout", 0) + counts.get("a_ko", 0)
-    b_losses = counts.get("b_down_timeout", 0) + counts.get("b_ko", 0)
+    a_losses = counts.get("a_down_timeout", 0) + counts.get("a_ko", 0) + counts.get("b_win_decision", 0)
+    b_losses = counts.get("b_down_timeout", 0) + counts.get("b_ko", 0) + counts.get("a_win_decision", 0)
     result = {
         "episodes": len(end_reasons),
         "checkpoint_a": args.checkpoint_a,

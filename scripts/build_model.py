@@ -24,7 +24,13 @@ FIGHTER_TEMPLATE = """
         </body>
 
         <body name="{p}upper_arm_r" pos="0 -0.07 0.20">
-          <joint name="{p}shoulder_r" type="hinge" axis="0 {ay} 0" range="-160 160" damping="1" armature="0.01"/>
+          <!-- was symmetric -160/160: measured (mj_forward at fixed qpos) positive = arm swings
+               toward the opponent (punch direction), negative = arm swings behind the torso. A
+               real shoulder extends (swings backward from hanging) only ~45-60 deg but flexes
+               (swings forward/overhead) close to 180 -- the old symmetric range let the policy
+               swing the arm almost as far behind the back as in front of it, same asymmetry
+               already applied to {p}waist ("-20 back, 45 forward"). -->
+          <joint name="{p}shoulder_r" type="hinge" axis="0 {ay} 0" range="-50 160" damping="1" armature="0.01"/>
           <geom name="{p}upper_arm_r" type="capsule" fromto="0 0 0 0 0 -0.28" size="0.045" rgba="{color}"/>
           <body name="{p}forearm_r" pos="0 0 -0.28">
             <joint name="{p}elbow_r" type="hinge" axis="0 {ay} 0" range="-150 0" damping="1" armature="0.01"/>
@@ -33,7 +39,7 @@ FIGHTER_TEMPLATE = """
         </body>
 
         <body name="{p}upper_arm_l" pos="0 0.07 0.20">
-          <joint name="{p}shoulder_l" type="hinge" axis="0 {ay} 0" range="-160 160" damping="1" armature="0.01"/>
+          <joint name="{p}shoulder_l" type="hinge" axis="0 {ay} 0" range="-50 160" damping="1" armature="0.01"/>
           <geom name="{p}upper_arm_l" type="capsule" fromto="0 0 0 0 0 -0.28" size="0.045" rgba="{color}"/>
           <body name="{p}forearm_l" pos="0 0 -0.28">
             <joint name="{p}elbow_l" type="hinge" axis="0 {ay} 0" range="-150 0" damping="1" armature="0.01"/>
@@ -132,8 +138,13 @@ ACTUATOR_GEAR = {
     # arrest a stumble instead of getting overpowered by torso weight/combat impacts.
     "hip_r": 90, "knee_r": 60, "hip_l": 90, "knee_l": 60,
     # ankle: small, fast corrective torque (fore/aft ground-reaction-force shifting), not gross
-    # locomotion force -- gear kept modest, between an elbow and a shoulder.
-    "ankle_r": 35, "ankle_l": 35,
+    # locomotion force. gear=35 (elbow-to-shoulder range) turned out way too strong once given
+    # a planted foot's leverage against the ground -- measured the policy slamming ctrl~1.0 on
+    # a grounded ankle and literally launching the torso backward at up to 2.4 m/s (docs 10.18).
+    # An elbow at the same gear only ever swings a free-hanging forearm; a grounded ankle pushes
+    # against the whole body + the earth's reaction mass, so the same gear number is nowhere
+    # near equivalent in effect. Cut to a third to keep it a fine corrective tool, not a launch.
+    "ankle_r": 14, "ankle_l": 14,
 }
 
 ROOT_GEAR = 90
