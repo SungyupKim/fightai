@@ -74,9 +74,9 @@ def run_matchup(p1, p2, episodes):
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def train_side(side, own_ckpt, opp_ckpt, timesteps, out_name, ent_coef=None):
+def train_side(side, own_ckpt, opp_ckpt, timesteps, out_name, ent_coef=None, n_envs=8):
     cmd = [str(VENV_PY), "train_league.py", "--side", side, "--timesteps", str(timesteps),
-           "--n-envs", "8", "--init-from", own_ckpt, "--opponent-from", opp_ckpt, "--out", out_name]
+           "--n-envs", str(n_envs), "--init-from", own_ckpt, "--opponent-from", opp_ckpt, "--out", out_name]
     if ent_coef is not None:
         cmd += ["--ent-coef", str(ent_coef)]
     start_pos = LOG_PATH.stat().st_size if LOG_PATH.exists() else 0
@@ -108,6 +108,10 @@ def main():
                               "respond instead of grinding uselessly")
     parser.add_argument("--p1-init", required=True)
     parser.add_argument("--p2-init", required=True)
+    parser.add_argument("--n-envs", type=int, default=8,
+                         help="parallel MuJoCo sim workers passed through to train_league.py -- "
+                              "each one is a full CPU-bound physics sim (no GPU involved), so this "
+                              "is the actual CPU/heat knob, independent of --device.")
     parser.add_argument("--ent-coef", type=float, default=None,
                          help="PPO entropy coefficient override (SB3 default is 0.0, i.e. no "
                               "entropy bonus at all -- std has been in monotonic freefall the "
@@ -147,10 +151,10 @@ def main():
 
         t0 = time.time()
         if side == "a":
-            std = train_side("a", p1, p2, args.timesteps, "ppo_p1", ent_coef=args.ent_coef)
+            std = train_side("a", p1, p2, args.timesteps, "ppo_p1", ent_coef=args.ent_coef, n_envs=args.n_envs)
             p1 = latest_ckpt("ppo_p1")
         else:
-            std = train_side("b", p2, p1, args.timesteps, "ppo_p2", ent_coef=args.ent_coef)
+            std = train_side("b", p2, p1, args.timesteps, "ppo_p2", ent_coef=args.ent_coef, n_envs=args.n_envs)
             p2 = latest_ckpt("ppo_p2")
         last_trained = side
         elapsed = time.time() - t0

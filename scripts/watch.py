@@ -55,7 +55,10 @@ def main():
     args = parser.parse_args()
 
     model = PPO.load(args.checkpoint, device="cpu")
-    env = Fighter2DEnv(opponent_policy_path=args.opponent)
+    # getup_curriculum_prob=0.0: always start standing here too, same reasoning as
+    # matchup_eval.py -- this viewer is for watching the fighters actually fight, not for
+    # randomly showing ~44% of rounds starting pre-collapsed.
+    env = Fighter2DEnv(opponent_policy_path=args.opponent, getup_curriculum_prob=0.0)
     obs, info = env.reset()
     prev_health = {"a": info.get("health_a", 100.0), "b": info.get("health_b", 100.0)}
     hit_flash = {"a": 0, "b": 0}  # frames remaining for each fighter's "just got hit" marker

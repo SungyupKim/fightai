@@ -40,7 +40,13 @@
         </body>
 
         <body name="a_upper_arm_r" pos="0 -0.07 0.20">
-          <joint name="a_shoulder_r" type="hinge" axis="0 -1 0" range="-160 160" damping="1" armature="0.01"/>
+          <!-- was symmetric -160/160: measured (mj_forward at fixed qpos) positive = arm swings
+               toward the opponent (punch direction), negative = arm swings behind the torso. A
+               real shoulder extends (swings backward from hanging) only ~45-60 deg but flexes
+               (swings forward/overhead) close to 180 -- the old symmetric range let the policy
+               swing the arm almost as far behind the back as in front of it, same asymmetry
+               already applied to a_waist ("-20 back, 45 forward"). -->
+          <joint name="a_shoulder_r" type="hinge" axis="0 -1 0" range="-50 160" damping="1" armature="0.01"/>
           <geom name="a_upper_arm_r" type="capsule" fromto="0 0 0 0 0 -0.28" size="0.045" rgba="0.85 0.2 0.2 1"/>
           <body name="a_forearm_r" pos="0 0 -0.28">
             <joint name="a_elbow_r" type="hinge" axis="0 -1 0" range="-150 0" damping="1" armature="0.01"/>
@@ -49,7 +55,7 @@
         </body>
 
         <body name="a_upper_arm_l" pos="0 0.07 0.20">
-          <joint name="a_shoulder_l" type="hinge" axis="0 -1 0" range="-160 160" damping="1" armature="0.01"/>
+          <joint name="a_shoulder_l" type="hinge" axis="0 -1 0" range="-50 160" damping="1" armature="0.01"/>
           <geom name="a_upper_arm_l" type="capsule" fromto="0 0 0 0 0 -0.28" size="0.045" rgba="0.85 0.2 0.2 1"/>
           <body name="a_forearm_l" pos="0 0 -0.28">
             <joint name="a_elbow_l" type="hinge" axis="0 -1 0" range="-150 0" damping="1" armature="0.01"/>
@@ -152,7 +158,13 @@
         </body>
 
         <body name="b_upper_arm_r" pos="0 -0.07 0.20">
-          <joint name="b_shoulder_r" type="hinge" axis="0 1 0" range="-160 160" damping="1" armature="0.01"/>
+          <!-- was symmetric -160/160: measured (mj_forward at fixed qpos) positive = arm swings
+               toward the opponent (punch direction), negative = arm swings behind the torso. A
+               real shoulder extends (swings backward from hanging) only ~45-60 deg but flexes
+               (swings forward/overhead) close to 180 -- the old symmetric range let the policy
+               swing the arm almost as far behind the back as in front of it, same asymmetry
+               already applied to b_waist ("-20 back, 45 forward"). -->
+          <joint name="b_shoulder_r" type="hinge" axis="0 1 0" range="-50 160" damping="1" armature="0.01"/>
           <geom name="b_upper_arm_r" type="capsule" fromto="0 0 0 0 0 -0.28" size="0.045" rgba="0.2 0.4 0.85 1"/>
           <body name="b_forearm_r" pos="0 0 -0.28">
             <joint name="b_elbow_r" type="hinge" axis="0 1 0" range="-150 0" damping="1" armature="0.01"/>
@@ -161,7 +173,7 @@
         </body>
 
         <body name="b_upper_arm_l" pos="0 0.07 0.20">
-          <joint name="b_shoulder_l" type="hinge" axis="0 1 0" range="-160 160" damping="1" armature="0.01"/>
+          <joint name="b_shoulder_l" type="hinge" axis="0 1 0" range="-50 160" damping="1" armature="0.01"/>
           <geom name="b_upper_arm_l" type="capsule" fromto="0 0 0 0 0 -0.28" size="0.045" rgba="0.2 0.4 0.85 1"/>
           <body name="b_forearm_l" pos="0 0 -0.28">
             <joint name="b_elbow_l" type="hinge" axis="0 1 0" range="-150 0" damping="1" armature="0.01"/>
@@ -254,10 +266,10 @@
     <motor name="a_elbow_l" joint="a_elbow_l" gear="30" ctrlrange="-1 1"/>
     <motor name="a_hip_r" joint="a_hip_r" gear="90" ctrlrange="-1 1"/>
     <motor name="a_knee_r" joint="a_knee_r" gear="60" ctrlrange="-1 1"/>
-    <motor name="a_ankle_r" joint="a_ankle_r" gear="35" ctrlrange="-1 1"/>
+    <motor name="a_ankle_r" joint="a_ankle_r" gear="14" ctrlrange="-1 1"/>
     <motor name="a_hip_l" joint="a_hip_l" gear="90" ctrlrange="-1 1"/>
     <motor name="a_knee_l" joint="a_knee_l" gear="60" ctrlrange="-1 1"/>
-    <motor name="a_ankle_l" joint="a_ankle_l" gear="35" ctrlrange="-1 1"/>
+    <motor name="a_ankle_l" joint="a_ankle_l" gear="14" ctrlrange="-1 1"/>
     <motor name="b_root_x" joint="b_root_x" gear="90" ctrlrange="-1 1"/>
     <motor name="b_root_ry" joint="b_root_ry" gear="250" ctrlrange="-1 1"/>
     <motor name="b_waist" joint="b_waist" gear="70" ctrlrange="-1 1"/>
@@ -268,9 +280,9 @@
     <motor name="b_elbow_l" joint="b_elbow_l" gear="30" ctrlrange="-1 1"/>
     <motor name="b_hip_r" joint="b_hip_r" gear="90" ctrlrange="-1 1"/>
     <motor name="b_knee_r" joint="b_knee_r" gear="60" ctrlrange="-1 1"/>
-    <motor name="b_ankle_r" joint="b_ankle_r" gear="35" ctrlrange="-1 1"/>
+    <motor name="b_ankle_r" joint="b_ankle_r" gear="14" ctrlrange="-1 1"/>
     <motor name="b_hip_l" joint="b_hip_l" gear="90" ctrlrange="-1 1"/>
     <motor name="b_knee_l" joint="b_knee_l" gear="60" ctrlrange="-1 1"/>
-    <motor name="b_ankle_l" joint="b_ankle_l" gear="35" ctrlrange="-1 1"/>
+    <motor name="b_ankle_l" joint="b_ankle_l" gear="14" ctrlrange="-1 1"/>
   </actuator>
 </mujoco>
