@@ -89,6 +89,16 @@ JERK_PENALTY_SCALE = 0.01      # cost on action change frame-to-frame, discourag
                                 # RELATIVE cost of a big reversal vs a small adjustment (it's squared, so
                                 # a launch-sized delta stays proportionally far more expensive either way).
                                 # (e.g. root thrust +1 -> -1 in one step)
+                                # Tried 0.01->0.005 (docs 10.31/10.32) on the theory that jerk penalty was
+                                # making the corrective action needed to arrest a "clean" (non-stagger)
+                                # fall too expensive right when it's needed most. Measured over 6 league
+                                # rounds: fall rate got WORSE, not better (33%/33%/50%/40%/63.3% across
+                                # rounds 2-6, vs a 34.4% baseline average from rounds 19-21 at 0.01) --
+                                # trend was monotonically bad, including after P2 got its first round
+                                # under the new value, so this wasn't just noise. Reverted to 0.01 and
+                                # rolled the league back to the pre-experiment checkpoints. The "clean
+                                # fall" mechanism documented in 10.31 is still real and still unexplained
+                                # -- jerk penalty just isn't the lever that fixes it.
 ENGAGE_PENALTY_SCALE = 0.5     # cost on log1p(foot distance) every step -- always some gradient to
                                 # close in (no free zone), steepest near contact range and flattening
                                 # out at long range. Was 0.3 -> 5.0 -> 2.0, tuning this scale alone kept
