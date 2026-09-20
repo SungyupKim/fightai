@@ -66,18 +66,27 @@ CALM_SEVERITY_HI = 0.3         # calm episodes still get SOME light random pertu
 TARGET_VX_RANGE = 1.0          # m/s, sampled uniform in [-range, +range] (0 = "hold position"
                                 # is just as likely to be sampled as any other value, not a
                                 # separate special case)
-RESAMPLE_EVERY_STEPS = 200     # re-roll the command mid-episode so one episode (up to
-                                # MAX_STEPS=1000) covers several different commands instead of
-                                # spending its whole length chasing just one
+RESAMPLE_EVERY_STEPS = None    # was 200 (docs 10.41): re-rolling mid-episode meant no single
+                                # command was ever committed to for long, so "twitch briefly
+                                # toward whatever's asked" could already capture most of the
+                                # achievable reward -- None now means only reset() rolls a new
+                                # target, so a whole episode (up to MAX_STEPS=1000) means
+                                # actually committing to one sustained walk, not several stabs.
 VELOCITY_REWARD_SCALE = 5.0    # was 2.0 (docs 10.35) -- measured mean |actual vx| only 0.158
                                 # m/s despite targets sampled up to 1.0 m/s, i.e. the policy
                                 # barely tries to move at all. 2.0 wasn't enough to outweigh
                                 # the safety of standing (crouched) still; pushing to 5.0 so
                                 # actually matching a fast command is worth clearly more than
                                 # the other per-step rewards combined.
-VELOCITY_SIGMA = 0.7           # was 0.5 -- widened a bit so an imperfect-but-real movement
-                                # attempt still earns a meaningfully bigger reward than standing
-                                # still against a nonzero target, not just near-perfect tracking
+VELOCITY_SIGMA = 0.3           # was 0.5, then 0.7 (docs 10.35) -- the widen-it attempt was
+                                # backwards: even after the knee/crouch problem got fixed
+                                # (v7, docs 10.40), mean |actual vx| was STILL only 0.129 m/s,
+                                # unmoved by any of the crouch fixes -- a separate problem.
+                                # The wide sigma was giving real "free" credit for NOT moving:
+                                # against a 1.0 m/s target, standing still (vx=0) scored
+                                # exp(-1.0^2/(2*0.7^2)) = 36% of max reward doing nothing.
+                                # Narrowing to 0.3 drops that to ~4%, so standing still against
+                                # a real command stops being a viable safe default.
                                 # gaussian shape (always >= 0, same cliff-free family as the
                                 # existing height/stability rewards) rather than a raw squared
                                 # penalty, for the same unbounded-blowup reasons documented at
@@ -214,7 +223,7 @@ class LocomotionEnv(Fighter2DEnv):
         info["reward_breakdown"]["velocity"] = velocity_reward
         info["target_vx"] = self._target_vx
 
-        if self.step_count % RESAMPLE_EVERY_STEPS == 0:
+        if RESAMPLE_EVERY_STEPS is not None and self.step_count % RESAMPLE_EVERY_STEPS == 0:
             self._resample_target_vx()
 
         return self._obs(), reward, terminated, truncated, info
