@@ -1,0 +1,159 @@
+"""Single-fighter mobility/recovery environment.
+
+'a' trains to (1) regain a stable standing state from an arbitrary starting body
+configuration (anywhere from a light shove to fully collapsed on the ground) and (2)
+track a commanded x-velocity while doing it, with 'b' teleported off to the side and held
+at zero control -- physically present in the model (it always has two bodies) but never
+interacted with.
+
+Validates a hypothesis raised after the 10.29-10.32 fall investigation: the persistent
+"clean fall" plateau (85% of falls, no preceding stagger, no clear single cause -- docs
+10.31) might be a single combat policy splitting its capacity between locomotion/mobility
+and combat objectives, rather than a locomotion skill that just hasn't been trained
+enough. Training balance/recovery/mobility in total isolation, with a much broader
+curriculum than the existing get-up curriculum (GETUP_CURRICULUM_PROB, docs 10.23)
+covers, is a cheap way to check: if a solo policy is dramatically more fall-resistant
+than the combat-trained one at a comparable step budget, that's real evidence for a
+hierarchical (locomotion + combat) architecture instead of one shared policy learning
+everything at once.
+
+v2 (docs 10.33): added velocity-command tracking -- v1 only rewarded NOT falling, with no
+signal at all for actually moving, so it had no reason to learn real mobility (the
+`root_x` actuator was available but unrewarded). Bumps the observation space by 1 dim
+(the current target velocity), so this is NOT warm-start-compatible with v1 checkpoints.
+"""
+import mujoco
+import numpy as np
+from gymnasium import spaces
+
+import env as env_module
+from env import Fighter2DEnv, GETUP_SETTLE_STEPS
+
+# Combat reward terms are meaningless with 'b' parked far away and inert. Zeroing these at
+# module level is per-process only (SubprocVecEnv gives each worker its own copy of the
+# module), so this doesn't affect env.py's other users. Left un-zeroed, ENGAGE_PENALTY_SCALE
+# in particular would apply a large constant penalty (foot_dist stays huge once 'b' is
+# parked) that has nothing to do with the actual task.
+env_module.ENGAGE_PENALTY_SCALE = 0.0
+env_module.PROGRESS_REWARD_SCALE = 0.0
+env_module.DAMAGE_REWARD_SCALE = 0.0
+
+# v2 fair-eval (docs 10.34) found the trained policy crouches at ~knee limit (-140deg)
+# essentially always, even starting from a normal standing pose -- not just during actual
+# recovery. RECOVERY_REWARD only engages below FALL_HEIGHT (a deep knee bend alone doesn't
+# drop the torso that far, so it never fires here), and velocity-tracking reward is
+# height-agnostic (crouched or standing, matching the target speed pays the same), so there
+# was very little pull back to full standing once a knee bend became "good enough" to be
+# stable. Doubling both height and knee-avoid pressure specifically for this task -- pure
+# reward-constant changes, so this continues from the existing checkpoint instead of
+# retraining from scratch.
+env_module.HEAD_HEIGHT_REWARD_SCALE = 6.0   # was 3.0
+env_module.KNEE_AVOID_SCALE = 0.5           # was 0.25
+
+B_PARK_X = 6.0  # far enough that a/b geoms can never contact regardless of b's pose
+
+# ---- velocity command ----
+TARGET_VX_RANGE = 1.0          # m/s, sampled uniform in [-range, +range] (0 = "hold position"
+                                # is just as likely to be sampled as any other value, not a
+                                # separate special case)
+RESAMPLE_EVERY_STEPS = 200     # re-roll the command mid-episode so one episode (up to
+                                # MAX_STEPS=1000) covers several different commands instead of
+                                # spending its whole length chasing just one
+VELOCITY_REWARD_SCALE = 2.0    # comparable magnitude to height/stability so mobility isn't
+                                # drowned out by "just stand still and collect height reward"
+VELOCITY_SIGMA = 0.5           # m/s -- how forgiving the tracking reward is around the target;
+                                # gaussian shape (always >= 0, same cliff-free family as the
+                                # existing height/stability rewards) rather than a raw squared
+                                # penalty, for the same unbounded-blowup reasons documented at
+                                # env.py's height-penalty history (docs, "Direct height PENALTY")
+
+
+class LocomotionEnv(Fighter2DEnv):
+    def __init__(self, render_mode=None):
+        super().__init__(render_mode=render_mode, opponent_policy_path=None, getup_curriculum_prob=0.0)
+        self._b_root_x_qpos = self.model.joint("b_root_x").qposadr[0]
+        self._b_root_x_dof = self.model.joint("b_root_x").dofadr[0]
+        self._a_root_x_dof = self.model.joint("a_root_x").dofadr[0]
+        self._zero_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
+        self._target_vx = 0.0
+
+        base_dim = self.observation_space.shape[0]
+        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(base_dim + 1,), dtype=np.float32)
+
+    def _obs(self):
+        return np.concatenate([super()._obs(), [self._target_vx]]).astype(np.float32)
+
+    def _resample_target_vx(self):
+        self._target_vx = float(self.np_random.uniform(-TARGET_VX_RANGE, TARGET_VX_RANGE))
+
+    def _randomize_a_state(self):
+        """Broader than Fighter2DEnv._collapse_pose: interpolates between the current
+        (near-standing) pose and a widely-sampled target by a random severity in [0, 1],
+        covering everything from a light perturbation to a full collapse in one curriculum
+        instead of a binary standing/collapsed split. Includes arms and torso pitch too,
+        not just legs/waist -- a real stagger disturbs the whole body, not just the base."""
+        severity = float(self.np_random.uniform(0.0, 1.0))
+        legs_waist = (("hip_r", 0.6), ("hip_l", 0.6), ("waist", 0.6))
+        for j, frac in legs_waist:
+            qpos = self.model.joint(f"a_{j}").qposadr[0]
+            lo, hi = self.model.joint(f"a_{j}").range
+            target = self.np_random.uniform(lo * frac, hi * frac)
+            self.data.qpos[qpos] = severity * target + (1.0 - severity) * self.data.qpos[qpos]
+        for j in ("knee_r", "knee_l"):
+            qpos = self.model.joint(f"a_{j}").qposadr[0]
+            lo, _hi = self.model.joint(f"a_{j}").range
+            target = self.np_random.uniform(lo * 0.7, 0.0)
+            self.data.qpos[qpos] = severity * target + (1.0 - severity) * self.data.qpos[qpos]
+        for j in ("ankle_r", "ankle_l", "shoulder_r", "shoulder_l", "elbow_r", "elbow_l"):
+            qpos = self.model.joint(f"a_{j}").qposadr[0]
+            lo, hi = self.model.joint(f"a_{j}").range
+            target = self.np_random.uniform(lo, hi)
+            self.data.qpos[qpos] = severity * target + (1.0 - severity) * self.data.qpos[qpos]
+        self.data.qpos[self.a_ry_qpos] += severity * self.np_random.uniform(-0.6, 0.6)
+        return severity
+
+    def reset(self, seed=None, options=None):
+        obs, info = super().reset(seed=seed, options=options)
+
+        self.data.qpos[self._b_root_x_qpos] = B_PARK_X
+        severity = self._randomize_a_state()
+        mujoco.mj_forward(self.model, self.data)
+
+        saved_ctrl = self.data.ctrl.copy()
+        self.data.ctrl[:] = 0.0
+        for _ in range(int(GETUP_SETTLE_STEPS * severity)):
+            mujoco.mj_step(self.model, self.data)
+        self.data.ctrl[:] = saved_ctrl
+
+        # 40% of resets also get a lateral shove on top of whatever pose they landed in --
+        # dedicated practice at "catch yourself from a push" (docs 10.31's stagger-fall
+        # category), not just "already down, get up" (get-up curriculum's case).
+        if self.np_random.random() < 0.4:
+            self.data.qvel[self._a_root_x_dof] += self.np_random.uniform(-2.5, 2.5)
+
+        self._resample_target_vx()
+        mujoco.mj_forward(self.model, self.data)
+        return self._obs(), info
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = super().step(action, b_full_action=self._zero_action)
+        # 'b' is scripted to be irrelevant, but down_steps['b'] can still creep up over time
+        # (no actuation holding it up) and trip a_out's `a_out or b_out` termination even
+        # though 'a' itself is fine -- only 'a' failing to recover should end an episode here.
+        if info.get("b_out") and not info.get("a_out"):
+            terminated = False
+        self.data.qpos[self._b_root_x_qpos] = B_PARK_X
+        self.data.qvel[self._b_root_x_dof] = 0.0
+
+        actual_vx = self.data.qvel[self._a_root_x_dof]
+        velocity_reward = VELOCITY_REWARD_SCALE * np.exp(
+            -((actual_vx - self._target_vx) ** 2) / (2.0 * VELOCITY_SIGMA ** 2)
+        )
+        reward = reward + velocity_reward
+        info["reward_breakdown"]["velocity"] = velocity_reward
+        info["target_vx"] = self._target_vx
+
+        if self.step_count % RESAMPLE_EVERY_STEPS == 0:
+            self._resample_target_vx()
+
+        return self._obs(), reward, terminated, truncated, info
