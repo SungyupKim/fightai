@@ -26,7 +26,7 @@ def parse_latest_block(log_path):
         tail = f.read().decode(errors="ignore")
     values = {}
     for line in reversed(tail.splitlines()):
-        m = re.match(r"\|\s*(\w+)\s*\|\s*([-\d.eE]+)\s*\|", line.strip())
+        m = re.match(r"\|\s*(\w+)\s*\|\s*([-+\d.eE]+)\s*\|", line.strip())
         if m and m.group(1) in FIELDS and m.group(1) not in values:
             values[m.group(1)] = float(m.group(2))
         if len(values) == len(FIELDS):
@@ -38,6 +38,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--interval-seconds", type=int, default=2700)  # 45 min
     parser.add_argument("--log", type=str, default=str(DEFAULT_LOG))
+    parser.add_argument("--total-timesteps", type=float, default=None,
+                         help="denominator for the step-progress line; omit to just show "
+                              "the raw step count with no /target (was hardcoded '/40M' "
+                              "regardless of the actual run's target -- docs 10.43)")
     args = parser.parse_args()
     log_path = pathlib.Path(args.log)
 
@@ -48,9 +52,11 @@ def main():
             if not v:
                 continue
             steps_m = v.get("total_timesteps", 0) / 1_000_000
+            steps_line = (f"스텝: {steps_m:.1f}M / {args.total_timesteps / 1_000_000:.0f}M"
+                          if args.total_timesteps else f"스텝: {steps_m:.1f}M")
             msg = (
                 f"[fightai] 이동 모델 진행 상황\n"
-                f"스텝: {steps_m:.1f}M / 40M\n"
+                f"{steps_line}\n"
                 f"fall_rate: {v.get('fall_rate', float('nan')):.3f}\n"
                 f"std: {v.get('std', float('nan')):.3f}\n"
                 f"r_velocity: {v.get('r_velocity', float('nan')):.1f}\n"
