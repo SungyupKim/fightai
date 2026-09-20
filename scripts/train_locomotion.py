@@ -92,7 +92,8 @@ class KneeScaffoldCallback(BaseCallback):
     removing scaffolding, since fully removing it invites reverting to the pre-scaffold
     policy)."""
 
-    def __init__(self, total_timesteps, start_deg=-50.0, end_deg=-80.0, relax_frac=0.6, freq=50_000):
+    def __init__(self, total_timesteps, start_deg=-50.0, end_deg=-80.0, relax_frac=0.6, freq=50_000,
+                 relax_by_step=None):
         super().__init__()
         self.total_timesteps = total_timesteps
         self.start_deg = start_deg
@@ -100,10 +101,20 @@ class KneeScaffoldCallback(BaseCallback):
         self.relax_frac = relax_frac
         self.freq = freq
         self._last_set_step = -freq  # force a set on the very first _on_step
+        # docs 10.44: relax_frac*total_timesteps is only right for a FRESH run -- a warm-started
+        # continuation keeps the model's cumulative num_timesteps but gets a new (usually
+        # smaller) --timesteps for just this call, so that product silently shrinks and the
+        # schedule computes progress against the wrong denominator, LOOSENING an already-fully-
+        # relaxed floor back down. relax_by_step is an absolute step count override for exactly
+        # this case -- pass the original schedule's completion point (or anything <= the
+        # checkpoint's current num_timesteps) so continuations immediately land at end_deg
+        # instead of restarting the ramp.
+        self.relax_by_step = relax_by_step
 
     def _on_step(self):
         if self.num_timesteps - self._last_set_step >= self.freq:
-            frac = min(1.0, self.num_timesteps / (self.relax_frac * self.total_timesteps))
+            denom = self.relax_by_step if self.relax_by_step is not None else self.relax_frac * self.total_timesteps
+            frac = min(1.0, self.num_timesteps / denom)
             floor_deg = self.start_deg + (self.end_deg - self.start_deg) * frac
             self.training_env.env_method("set_min_knee_deg", floor_deg)
             self.logger.record("rollout/knee_floor_deg", floor_deg)
@@ -140,6 +151,11 @@ def main():
                               "policy, e.g. a combat checkpoint) -- default: train from scratch")
     parser.add_argument("--save-freq", type=int, default=25_000)
     parser.add_argument("--ent-coef", type=float, default=None)
+    parser.add_argument("--knee-relax-by-step", type=float, default=None,
+                         help="absolute step count for the knee scaffold to reach its permanent "
+                              "floor (docs 10.44) -- pass this on any --init-from continuation of "
+                              "a run that already finished relaxing, so it doesn't loosen back up "
+                              "against this call's own (usually smaller) --timesteps")
     args = parser.parse_args()
 
     MODELS_DIR.mkdir(exist_ok=True)
@@ -167,7 +183,8 @@ def main():
         name_prefix=run_name,
     )
     callbacks = CallbackList([checkpoint_callback, BreakdownCallback(), FallRateCallback(),
-                               LogStdClampCallback(), KneeScaffoldCallback(args.timesteps)])
+                               LogStdClampCallback(),
+                               KneeScaffoldCallback(args.timesteps, relax_by_step=args.knee_relax_by_step)])
 
     try:
         model.learn(total_timesteps=args.timesteps, callback=callbacks,
