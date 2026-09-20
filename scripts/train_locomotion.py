@@ -77,14 +77,22 @@ class LogStdClampCallback(BaseCallback):
 
 class KneeScaffoldCallback(BaseCallback):
     """Anneals LocomotionEnv's per-calm-episode knee floor (docs 10.37) from `start_deg`
-    (restrictive -- physically can't retreat into a deep crouch) down to the joint's real
-    limit (fully relaxed, clamp becomes a no-op) by `relax_frac` of total training. Forces
-    practice at staying upright/moving without the crouch escape hatch early on, then hands
-    control back once that's had a chance to take hold, rather than permanently constraining
-    the joint (which would just make deep-crouch recovery impossible even in harsh episodes
-    -- calm-only gating in the env itself already handles that distinction)."""
+    (restrictive -- physically can't retreat into a deep crouch) to `end_deg` by `relax_frac`
+    of total training, then holds there for good.
 
-    def __init__(self, total_timesteps, start_deg=-50.0, end_deg=-140.0, relax_frac=0.6, freq=50_000):
+    v6 (docs 10.38) relaxed all the way to the joint's real limit (-140, fully unconstrained)
+    and regressed hard as it did -- knee-straighter-than-90deg dropped 27%->12.5% and mean
+    |vx| dropped 0.174->0.131 m/s between the 3.75M and 9.25M checkpoints, tracking the floor
+    loosening from -78 to -119. Calm episodes are explicitly the "nothing threatening is
+    happening" case -- there's no real reason they'd ever need a full-depth crouch (that's
+    what harsh/collapse episodes are for, and they keep their own unconstrained range
+    regardless of this schedule). So end_deg now stops at a permanent partial floor instead
+    of releasing back to the full range -- matches the standard curriculum-RL mitigation for
+    this exact failure mode (mix difficulty levels / cap the relaxation rather than fully
+    removing scaffolding, since fully removing it invites reverting to the pre-scaffold
+    policy)."""
+
+    def __init__(self, total_timesteps, start_deg=-50.0, end_deg=-80.0, relax_frac=0.6, freq=50_000):
         super().__init__()
         self.total_timesteps = total_timesteps
         self.start_deg = start_deg
