@@ -92,9 +92,29 @@ class LocomotionEnv(Fighter2DEnv):
         self._a_root_x_dof = self.model.joint("a_root_x").dofadr[0]
         self._zero_action = np.zeros(self.action_space.shape[0], dtype=np.float32)
         self._target_vx = 0.0
+        self._knee_r_qpos = self.model.joint("a_knee_r").qposadr[0]
+        self._knee_l_qpos = self.model.joint("a_knee_l").qposadr[0]
+        self._knee_r_dof = self.model.joint("a_knee_r").dofadr[0]
+        self._knee_l_dof = self.model.joint("a_knee_l").dofadr[0]
+        # scaffolding (docs 10.37): even a forced-standing, high-target-velocity reset still
+        # crouched back to ~-136deg median within 1s (measured on a mid-training v5
+        # checkpoint) -- reward-side pressure (10.34/10.35) repeatedly failed to out-argue the
+        # policy's own experience that extending is risky. Instead of persuading, remove the
+        # escape hatch: during calm episodes only (harsh/collapse episodes still need the full
+        # range to recover from genuine collapse), clamp the knee no deeper than this floor.
+        # None = no clamp (full range) -- the default until a training run opts in via
+        # set_min_knee_deg(), so this class stays a no-op change for anything not using it.
+        self._min_knee_deg = None
+        self._episode_knee_floor = None  # this episode's floor in radians, or None
 
         base_dim = self.observation_space.shape[0]
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(base_dim + 1,), dtype=np.float32)
+
+    def set_min_knee_deg(self, deg):
+        """deg=None disables the clamp entirely. Called externally (KneeScaffoldCallback)
+        to anneal the floor over training -- SB3's env_method() broadcasts this to every
+        SubprocVecEnv worker."""
+        self._min_knee_deg = None if deg is None else np.deg2rad(deg)
 
     def _obs(self):
         return np.concatenate([super()._obs(), [self._target_vx]]).astype(np.float32)
@@ -145,6 +165,9 @@ class LocomotionEnv(Fighter2DEnv):
         # defensively some of the time, not permanently braced.
         is_calm = self.np_random.random() < CALM_EPISODE_FRAC
         severity = self._randomize_a_state(CALM_SEVERITY_HI if is_calm else 1.0)
+        # only calm episodes get the knee floor -- harsh/collapse episodes need the full
+        # range to actually recover from a genuine collapse (docs 10.37)
+        self._episode_knee_floor = self._min_knee_deg if is_calm else None
         mujoco.mj_forward(self.model, self.data)
 
         saved_ctrl = self.data.ctrl.copy()
@@ -172,6 +195,16 @@ class LocomotionEnv(Fighter2DEnv):
             terminated = False
         self.data.qpos[self._b_root_x_qpos] = B_PARK_X
         self.data.qvel[self._b_root_x_dof] = 0.0
+
+        if self._episode_knee_floor is not None:
+            clamped = False
+            for qadr, dadr in ((self._knee_r_qpos, self._knee_r_dof), (self._knee_l_qpos, self._knee_l_dof)):
+                if self.data.qpos[qadr] < self._episode_knee_floor:
+                    self.data.qpos[qadr] = self._episode_knee_floor
+                    self.data.qvel[dadr] = max(0.0, self.data.qvel[dadr])  # keep any extending motion
+                    clamped = True
+            if clamped:
+                mujoco.mj_forward(self.model, self.data)
 
         actual_vx = self.data.qvel[self._a_root_x_dof]
         velocity_reward = VELOCITY_REWARD_SCALE * np.exp(

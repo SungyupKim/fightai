@@ -75,6 +75,34 @@ class LogStdClampCallback(BaseCallback):
         return True
 
 
+class KneeScaffoldCallback(BaseCallback):
+    """Anneals LocomotionEnv's per-calm-episode knee floor (docs 10.37) from `start_deg`
+    (restrictive -- physically can't retreat into a deep crouch) down to the joint's real
+    limit (fully relaxed, clamp becomes a no-op) by `relax_frac` of total training. Forces
+    practice at staying upright/moving without the crouch escape hatch early on, then hands
+    control back once that's had a chance to take hold, rather than permanently constraining
+    the joint (which would just make deep-crouch recovery impossible even in harsh episodes
+    -- calm-only gating in the env itself already handles that distinction)."""
+
+    def __init__(self, total_timesteps, start_deg=-50.0, end_deg=-140.0, relax_frac=0.6, freq=50_000):
+        super().__init__()
+        self.total_timesteps = total_timesteps
+        self.start_deg = start_deg
+        self.end_deg = end_deg
+        self.relax_frac = relax_frac
+        self.freq = freq
+        self._last_set_step = -freq  # force a set on the very first _on_step
+
+    def _on_step(self):
+        if self.num_timesteps - self._last_set_step >= self.freq:
+            frac = min(1.0, self.num_timesteps / (self.relax_frac * self.total_timesteps))
+            floor_deg = self.start_deg + (self.end_deg - self.start_deg) * frac
+            self.training_env.env_method("set_min_knee_deg", floor_deg)
+            self.logger.record("rollout/knee_floor_deg", floor_deg)
+            self._last_set_step = self.num_timesteps
+        return True
+
+
 class FallRateCallback(BaseCallback):
     """Fraction of completed episodes that ended via a_out (failed to recover within
     DOWN_RECOVERY_STEPS) rather than truncation at MAX_STEPS -- the direct metric this
@@ -131,7 +159,7 @@ def main():
         name_prefix=run_name,
     )
     callbacks = CallbackList([checkpoint_callback, BreakdownCallback(), FallRateCallback(),
-                               LogStdClampCallback()])
+                               LogStdClampCallback(), KneeScaffoldCallback(args.timesteps)])
 
     try:
         model.learn(total_timesteps=args.timesteps, callback=callbacks,
