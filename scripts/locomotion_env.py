@@ -48,9 +48,19 @@ env_module.DAMAGE_REWARD_SCALE = 0.0
 # reward-constant changes, so this continues from the existing checkpoint instead of
 # retraining from scratch.
 env_module.HEAD_HEIGHT_REWARD_SCALE = 6.0   # was 3.0
-env_module.KNEE_AVOID_SCALE = 0.5           # was 0.25
+env_module.KNEE_AVOID_SCALE = 1.0           # was 0.25, then 0.5 (docs 10.34) -- still measured
+                                             # knee_r straighter than -90deg only 6% of the time
+                                             # and mean |actual vx| only 0.158 m/s despite targets
+                                             # up to 1.0 m/s (docs 10.35), so the permanent crouch
+                                             # is winning even at 2x. Pushing further.
 
 B_PARK_X = 6.0  # far enough that a/b geoms can never contact regardless of b's pose
+
+# ---- calm/harsh episode split (docs 10.36) ----
+CALM_EPISODE_FRAC = 0.6        # fraction of resets that get the low-threat "just stand/move
+                                # normally" treatment instead of the full hard curriculum
+CALM_SEVERITY_HI = 0.3         # calm episodes still get SOME light random perturbation
+                                # (severity sampled in [0, this]), just nothing collapse-grade
 
 # ---- velocity command ----
 TARGET_VX_RANGE = 1.0          # m/s, sampled uniform in [-range, +range] (0 = "hold position"
@@ -59,9 +69,15 @@ TARGET_VX_RANGE = 1.0          # m/s, sampled uniform in [-range, +range] (0 = "
 RESAMPLE_EVERY_STEPS = 200     # re-roll the command mid-episode so one episode (up to
                                 # MAX_STEPS=1000) covers several different commands instead of
                                 # spending its whole length chasing just one
-VELOCITY_REWARD_SCALE = 2.0    # comparable magnitude to height/stability so mobility isn't
-                                # drowned out by "just stand still and collect height reward"
-VELOCITY_SIGMA = 0.5           # m/s -- how forgiving the tracking reward is around the target;
+VELOCITY_REWARD_SCALE = 5.0    # was 2.0 (docs 10.35) -- measured mean |actual vx| only 0.158
+                                # m/s despite targets sampled up to 1.0 m/s, i.e. the policy
+                                # barely tries to move at all. 2.0 wasn't enough to outweigh
+                                # the safety of standing (crouched) still; pushing to 5.0 so
+                                # actually matching a fast command is worth clearly more than
+                                # the other per-step rewards combined.
+VELOCITY_SIGMA = 0.7           # was 0.5 -- widened a bit so an imperfect-but-real movement
+                                # attempt still earns a meaningfully bigger reward than standing
+                                # still against a nonzero target, not just near-perfect tracking
                                 # gaussian shape (always >= 0, same cliff-free family as the
                                 # existing height/stability rewards) rather than a raw squared
                                 # penalty, for the same unbounded-blowup reasons documented at
@@ -86,13 +102,14 @@ class LocomotionEnv(Fighter2DEnv):
     def _resample_target_vx(self):
         self._target_vx = float(self.np_random.uniform(-TARGET_VX_RANGE, TARGET_VX_RANGE))
 
-    def _randomize_a_state(self):
+    def _randomize_a_state(self, severity_hi):
         """Broader than Fighter2DEnv._collapse_pose: interpolates between the current
-        (near-standing) pose and a widely-sampled target by a random severity in [0, 1],
-        covering everything from a light perturbation to a full collapse in one curriculum
-        instead of a binary standing/collapsed split. Includes arms and torso pitch too,
-        not just legs/waist -- a real stagger disturbs the whole body, not just the base."""
-        severity = float(self.np_random.uniform(0.0, 1.0))
+        (near-standing) pose and a widely-sampled target by a random severity in
+        [0, severity_hi], covering everything from a light perturbation to a full collapse
+        in one curriculum instead of a binary standing/collapsed split. Includes arms and
+        torso pitch too, not just legs/waist -- a real stagger disturbs the whole body, not
+        just the base."""
+        severity = float(self.np_random.uniform(0.0, severity_hi))
         legs_waist = (("hip_r", 0.6), ("hip_l", 0.6), ("waist", 0.6))
         for j, frac in legs_waist:
             qpos = self.model.joint(f"a_{j}").qposadr[0]
@@ -116,7 +133,18 @@ class LocomotionEnv(Fighter2DEnv):
         obs, info = super().reset(seed=seed, options=options)
 
         self.data.qpos[self._b_root_x_qpos] = B_PARK_X
-        severity = self._randomize_a_state()
+        # Two-tier curriculum (docs 10.36): measured that falls happen mostly during
+        # knee-extended moments, not crouched ones (knee ~-52deg median 1s before a fall vs
+        # ~-138deg overall) -- the policy has correctly learned, from its OWN experience,
+        # that standing/extending is genuinely riskier under a curriculum where every single
+        # episode starts with some random collapse severity and a 40% chance of a shove.
+        # Reward-scale bumps (10.34/10.35) couldn't out-argue that real experience. Instead,
+        # give it a lot more practice at "nothing threatening is happening, standing is
+        # fine" by making most episodes calm (low severity, no push) and only a minority
+        # keep the full hard curriculum -- closer to how a real fighter is only crouched
+        # defensively some of the time, not permanently braced.
+        is_calm = self.np_random.random() < CALM_EPISODE_FRAC
+        severity = self._randomize_a_state(CALM_SEVERITY_HI if is_calm else 1.0)
         mujoco.mj_forward(self.model, self.data)
 
         saved_ctrl = self.data.ctrl.copy()
@@ -125,10 +153,10 @@ class LocomotionEnv(Fighter2DEnv):
             mujoco.mj_step(self.model, self.data)
         self.data.ctrl[:] = saved_ctrl
 
-        # 40% of resets also get a lateral shove on top of whatever pose they landed in --
-        # dedicated practice at "catch yourself from a push" (docs 10.31's stagger-fall
-        # category), not just "already down, get up" (get-up curriculum's case).
-        if self.np_random.random() < 0.4:
+        # push probability follows the same calm/harsh split -- a calm episode should mean
+        # genuinely no threat, not just a smaller starting bend.
+        push_prob = 0.0 if is_calm else 0.4
+        if self.np_random.random() < push_prob:
             self.data.qvel[self._a_root_x_dof] += self.np_random.uniform(-2.5, 2.5)
 
         self._resample_target_vx()
