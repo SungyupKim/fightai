@@ -75,10 +75,64 @@ class LogStdClampCallback(BaseCallback):
         return True
 
 
-class KneeScaffoldCallback(BaseCallback):
+class LinearScaffoldCallback(BaseCallback):
+    """Shared machinery for annealing a LocomotionEnv scaffold parameter from `start_val` to
+    `end_val` over `relax_frac` of THIS CALL's own timestep budget, then holding at `end_val`
+    for good -- used by both KneeScaffoldCallback (docs 10.37/10.38) and
+    VelocityAssistCallback (docs 10.45). Subclass and implement `apply(value)` to broadcast
+    the annealed value (via env_method) and pick a `log_key` for the logger.
+
+    docs 10.44/10.45: originally computed progress as num_timesteps / (relax_frac *
+    total_timesteps) -- num_timesteps is the model's CUMULATIVE step count (carried over by a
+    warm start), so on any --init-from continuation this either (a) massively overshot the
+    denominator for an already-relaxed parameter being continued, re-loosening a scaffold that
+    had already finished relaxing (the exact v8b->v9 knee bug), or (b) for a BRAND NEW
+    parameter added mid-project (velocity assist), the huge inherited num_timesteps instantly
+    saturated frac to 1.0, skipping the ramp before a single step of this run had happened.
+    Both were the same root mistake: measuring progress against absolute step count instead of
+    this call's own elapsed steps. Fixed by tracking elapsed = num_timesteps - (num_timesteps
+    at the start of THIS training_start), i.e. always 0 at the beginning of any given call
+    regardless of warm-start history. already_relaxed=True skips straight to end_val from the
+    first step -- pass it explicitly on a continuation of a schedule that already finished
+    ramping in a prior run, instead of trying to re-derive an absolute step count."""
+
+    log_key = "rollout/scaffold_value"
+
+    def __init__(self, total_timesteps, start_val, end_val, relax_frac=0.6, freq=50_000,
+                 already_relaxed=False):
+        super().__init__()
+        self.total_timesteps = total_timesteps
+        self.start_val = start_val
+        self.end_val = end_val
+        self.relax_frac = relax_frac
+        self.freq = freq
+        self.already_relaxed = already_relaxed
+        self._start_step = None
+        self._last_set_step = -freq  # force a set on the very first _on_step
+
+    def apply(self, value):
+        raise NotImplementedError
+
+    def _on_training_start(self):
+        self._start_step = self.num_timesteps
+
+    def _on_step(self):
+        if self.num_timesteps - self._last_set_step >= self.freq:
+            if self.already_relaxed:
+                frac = 1.0
+            else:
+                elapsed = self.num_timesteps - self._start_step
+                frac = min(1.0, elapsed / (self.relax_frac * self.total_timesteps))
+            value = self.start_val + (self.end_val - self.start_val) * frac
+            self.apply(value)
+            self.logger.record(self.log_key, value)
+            self._last_set_step = self.num_timesteps
+        return True
+
+
+class KneeScaffoldCallback(LinearScaffoldCallback):
     """Anneals LocomotionEnv's per-calm-episode knee floor (docs 10.37) from `start_deg`
-    (restrictive -- physically can't retreat into a deep crouch) to `end_deg` by `relax_frac`
-    of total training, then holds there for good.
+    (restrictive -- physically can't retreat into a deep crouch) to `end_deg`, then holds.
 
     v6 (docs 10.38) relaxed all the way to the joint's real limit (-140, fully unconstrained)
     and regressed hard as it did -- knee-straighter-than-90deg dropped 27%->12.5% and mean
@@ -92,34 +146,36 @@ class KneeScaffoldCallback(BaseCallback):
     removing scaffolding, since fully removing it invites reverting to the pre-scaffold
     policy)."""
 
-    def __init__(self, total_timesteps, start_deg=-50.0, end_deg=-80.0, relax_frac=0.6, freq=50_000,
-                 relax_by_step=None):
-        super().__init__()
-        self.total_timesteps = total_timesteps
-        self.start_deg = start_deg
-        self.end_deg = end_deg
-        self.relax_frac = relax_frac
-        self.freq = freq
-        self._last_set_step = -freq  # force a set on the very first _on_step
-        # docs 10.44: relax_frac*total_timesteps is only right for a FRESH run -- a warm-started
-        # continuation keeps the model's cumulative num_timesteps but gets a new (usually
-        # smaller) --timesteps for just this call, so that product silently shrinks and the
-        # schedule computes progress against the wrong denominator, LOOSENING an already-fully-
-        # relaxed floor back down. relax_by_step is an absolute step count override for exactly
-        # this case -- pass the original schedule's completion point (or anything <= the
-        # checkpoint's current num_timesteps) so continuations immediately land at end_deg
-        # instead of restarting the ramp.
-        self.relax_by_step = relax_by_step
+    log_key = "rollout/knee_floor_deg"
 
-    def _on_step(self):
-        if self.num_timesteps - self._last_set_step >= self.freq:
-            denom = self.relax_by_step if self.relax_by_step is not None else self.relax_frac * self.total_timesteps
-            frac = min(1.0, self.num_timesteps / denom)
-            floor_deg = self.start_deg + (self.end_deg - self.start_deg) * frac
-            self.training_env.env_method("set_min_knee_deg", floor_deg)
-            self.logger.record("rollout/knee_floor_deg", floor_deg)
-            self._last_set_step = self.num_timesteps
-        return True
+    def __init__(self, total_timesteps, start_deg=-50.0, end_deg=-80.0, **kwargs):
+        super().__init__(total_timesteps, start_deg, end_deg, **kwargs)
+
+    def apply(self, value):
+        self.training_env.env_method("set_min_knee_deg", value)
+
+
+class VelocityAssistCallback(LinearScaffoldCallback):
+    """Anneals LocomotionEnv's external push-toward-target-velocity force (docs 10.45) from
+    `start_scale` down to a small permanent `end_scale` (not 0 -- the knee scaffold's lesson
+    from 10.38/10.40 was that fully removing a scaffold invites reverting).
+
+    Measured mean |actual vx| stuck at ~0.13-0.17 m/s across five straight reward/curriculum
+    changes (v2 through v8b), while a pure-physics check (max root_x thrust, no other joints)
+    showed the actuator can reach 1.5 m/s alone -- it's not an actuator power problem, it's
+    that any real attempt at speed risks falling with no leg coordination yet, so the policy
+    converges to barely moving (same shape of problem as the knee habit). The assist is an
+    external nudge in qfrc_applied proportional to target_vx, calm episodes only -- gives the
+    policy sustained experience of being in motion (and what balance recovery looks like at
+    speed) without asking it to generate 100% of the propulsion from scratch."""
+
+    log_key = "rollout/assist_scale"
+
+    def __init__(self, total_timesteps, start_scale=30.0, end_scale=8.0, **kwargs):
+        super().__init__(total_timesteps, start_scale, end_scale, **kwargs)
+
+    def apply(self, value):
+        self.training_env.env_method("set_assist_scale", value)
 
 
 class FallRateCallback(BaseCallback):
@@ -151,11 +207,12 @@ def main():
                               "policy, e.g. a combat checkpoint) -- default: train from scratch")
     parser.add_argument("--save-freq", type=int, default=25_000)
     parser.add_argument("--ent-coef", type=float, default=None)
-    parser.add_argument("--knee-relax-by-step", type=float, default=None,
-                         help="absolute step count for the knee scaffold to reach its permanent "
-                              "floor (docs 10.44) -- pass this on any --init-from continuation of "
-                              "a run that already finished relaxing, so it doesn't loosen back up "
-                              "against this call's own (usually smaller) --timesteps")
+    parser.add_argument("--knee-already-relaxed", action="store_true",
+                         help="skip the knee scaffold straight to its permanent floor from "
+                              "step 0 (docs 10.44/10.45) -- pass this on any --init-from "
+                              "continuation of a run whose knee schedule already finished")
+    parser.add_argument("--assist-already-relaxed", action="store_true",
+                         help="same as --knee-already-relaxed, for the velocity assist scaffold")
     args = parser.parse_args()
 
     MODELS_DIR.mkdir(exist_ok=True)
@@ -184,7 +241,8 @@ def main():
     )
     callbacks = CallbackList([checkpoint_callback, BreakdownCallback(), FallRateCallback(),
                                LogStdClampCallback(),
-                               KneeScaffoldCallback(args.timesteps, relax_by_step=args.knee_relax_by_step)])
+                               KneeScaffoldCallback(args.timesteps, already_relaxed=args.knee_already_relaxed),
+                               VelocityAssistCallback(args.timesteps, already_relaxed=args.assist_already_relaxed)])
 
     try:
         model.learn(total_timesteps=args.timesteps, callback=callbacks,
