@@ -115,6 +115,17 @@ class LocomotionEnv(Fighter2DEnv):
         # set_min_knee_deg(), so this class stays a no-op change for anything not using it.
         self._min_knee_deg = None
         self._episode_knee_floor = None  # this episode's floor in radians, or None
+        self._is_calm = False
+        # velocity assist (docs 10.45): a pure physics check (max root_x thrust, no other
+        # joints) showed the actuator has plenty of power -- 1.5 m/s reachable -- but the
+        # torso outruns its own base of support and falls by ~6.5s with no leg coordination.
+        # Real mean |actual vx| stayed ~0.13-0.17 m/s across v2/v4/v5/v6/v7/v8b regardless of
+        # reward changes: likely the same root cause as the knee habit (10.37) -- any
+        # committed attempt at speed risks a fall, so the policy converges to barely moving.
+        # This is an external qfrc_applied nudge toward target_vx (calm episodes only, same
+        # gating as the knee floor) -- like someone lightly pushing you the right way while
+        # you find your own coordination, not doing the walking for you. 0.0 = no-op default.
+        self._assist_scale = 0.0
 
         base_dim = self.observation_space.shape[0]
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(base_dim + 1,), dtype=np.float32)
@@ -124,6 +135,11 @@ class LocomotionEnv(Fighter2DEnv):
         to anneal the floor over training -- SB3's env_method() broadcasts this to every
         SubprocVecEnv worker."""
         self._min_knee_deg = None if deg is None else np.deg2rad(deg)
+
+    def set_assist_scale(self, scale):
+        """Called externally (VelocityAssistCallback) to anneal the external push-toward-
+        target-velocity force. 0.0 disables it entirely."""
+        self._assist_scale = scale
 
     def _obs(self):
         return np.concatenate([super()._obs(), [self._target_vx]]).astype(np.float32)
@@ -177,6 +193,7 @@ class LocomotionEnv(Fighter2DEnv):
         # only calm episodes get the knee floor -- harsh/collapse episodes need the full
         # range to actually recover from a genuine collapse (docs 10.37)
         self._episode_knee_floor = self._min_knee_deg if is_calm else None
+        self._is_calm = is_calm
         mujoco.mj_forward(self.model, self.data)
 
         saved_ctrl = self.data.ctrl.copy()
@@ -196,6 +213,11 @@ class LocomotionEnv(Fighter2DEnv):
         return self._obs(), info
 
     def step(self, action):
+        if self._is_calm and self._assist_scale:
+            self.data.qfrc_applied[self._a_root_x_dof] = self._assist_scale * self._target_vx
+        else:
+            self.data.qfrc_applied[self._a_root_x_dof] = 0.0
+
         obs, reward, terminated, truncated, info = super().step(action, b_full_action=self._zero_action)
         # 'b' is scripted to be irrelevant, but down_steps['b'] can still creep up over time
         # (no actuation holding it up) and trip a_out's `a_out or b_out` termination even
