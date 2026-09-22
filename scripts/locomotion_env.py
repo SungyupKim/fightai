@@ -92,6 +92,18 @@ VELOCITY_SIGMA = 0.3           # was 0.5, then 0.7 (docs 10.35) -- the widen-it 
                                 # penalty, for the same unbounded-blowup reasons documented at
                                 # env.py's height-penalty history (docs, "Direct height PENALTY")
 
+# ---- gait shaping (docs 10.46) ----
+# The outcome reward (velocity, above) never got the policy to actually try leg-stepping --
+# mean |actual vx| stuck at ~0.13-0.17 m/s across seven straight reward/curriculum/assist
+# changes (v2 through v9). Rewarding the OUTCOME of walking wasn't giving it any signal about
+# the PROCESS (alternating leg swing) needed to discover it -- shaping directly on that
+# process instead. -hip_r_vel*hip_l_vel is positive exactly when the two hips are rotating in
+# OPPOSITE directions (one swinging forward while the other's planted/trailing, the core
+# signature of a stepping gait) and <=0 when they move together or sit still, so this can't be
+# satisfied by e.g. vibrating both legs in sync or twitching once -- clamped at 0 so moving in
+# sync never costs anything (this is a bonus, not a jerk-style penalty).
+GAIT_REWARD_SCALE = 3.0
+
 
 class LocomotionEnv(Fighter2DEnv):
     def __init__(self, render_mode=None):
@@ -105,6 +117,8 @@ class LocomotionEnv(Fighter2DEnv):
         self._knee_l_qpos = self.model.joint("a_knee_l").qposadr[0]
         self._knee_r_dof = self.model.joint("a_knee_r").dofadr[0]
         self._knee_l_dof = self.model.joint("a_knee_l").dofadr[0]
+        self._hip_r_dof = self.model.joint("a_hip_r").dofadr[0]
+        self._hip_l_dof = self.model.joint("a_hip_l").dofadr[0]
         # scaffolding (docs 10.37): even a forced-standing, high-target-velocity reset still
         # crouched back to ~-136deg median within 1s (measured on a mid-training v5
         # checkpoint) -- reward-side pressure (10.34/10.35) repeatedly failed to out-argue the
@@ -241,8 +255,12 @@ class LocomotionEnv(Fighter2DEnv):
         velocity_reward = VELOCITY_REWARD_SCALE * np.exp(
             -((actual_vx - self._target_vx) ** 2) / (2.0 * VELOCITY_SIGMA ** 2)
         )
-        reward = reward + velocity_reward
+        hip_r_vel = self.data.qvel[self._hip_r_dof]
+        hip_l_vel = self.data.qvel[self._hip_l_dof]
+        gait_reward = GAIT_REWARD_SCALE * max(0.0, -(hip_r_vel * hip_l_vel))
+        reward = reward + velocity_reward + gait_reward
         info["reward_breakdown"]["velocity"] = velocity_reward
+        info["reward_breakdown"]["gait"] = gait_reward
         info["target_vx"] = self._target_vx
 
         if RESAMPLE_EVERY_STEPS is not None and self.step_count % RESAMPLE_EVERY_STEPS == 0:
