@@ -92,17 +92,21 @@ VELOCITY_SIGMA = 0.3           # was 0.5, then 0.7 (docs 10.35) -- the widen-it 
                                 # penalty, for the same unbounded-blowup reasons documented at
                                 # env.py's height-penalty history (docs, "Direct height PENALTY")
 
-# ---- gait shaping (docs 10.46) ----
+# ---- gait shaping (docs 10.46/10.47) -- tried, reverted ----
 # The outcome reward (velocity, above) never got the policy to actually try leg-stepping --
 # mean |actual vx| stuck at ~0.13-0.17 m/s across seven straight reward/curriculum/assist
-# changes (v2 through v9). Rewarding the OUTCOME of walking wasn't giving it any signal about
-# the PROCESS (alternating leg swing) needed to discover it -- shaping directly on that
-# process instead. -hip_r_vel*hip_l_vel is positive exactly when the two hips are rotating in
-# OPPOSITE directions (one swinging forward while the other's planted/trailing, the core
-# signature of a stepping gait) and <=0 when they move together or sit still, so this can't be
-# satisfied by e.g. vibrating both legs in sync or twitching once -- clamped at 0 so moving in
-# sync never costs anything (this is a bonus, not a jerk-style penalty).
-GAIT_REWARD_SCALE = 3.0
+# changes (v2 through v9). Tried shaping directly on the PROCESS instead of the outcome:
+# -hip_r_vel*hip_l_vel (positive when the two hips rotate in OPPOSITE directions, clamped at 0
+# otherwise) was meant to reward the core signature of a stepping gait without being
+# satisfiable by e.g. vibrating both legs in sync. It wasn't strict enough -- v10 (10.47)
+# measured r_gait climbing hard (130->340 over 8M steps) while mean |actual vx| and its
+# correlation with target_vx both went DOWN, and fall_rate crept up too: the policy found it
+# could rack up this reward by marching/scissoring in place (real anti-phase hip motion, just
+# with no net displacement), which this term couldn't tell apart from real walking. Reverted
+# to 0 -- scale kept at 0.0 rather than deleted so the mechanism and this history stay
+# visible; re-enable only with a displacement-gated version (e.g. only pay out when it's
+# ALSO making progress toward target_vx) if this gets revisited.
+GAIT_REWARD_SCALE = 0.0
 
 
 class LocomotionEnv(Fighter2DEnv):
