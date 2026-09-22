@@ -92,21 +92,20 @@ VELOCITY_SIGMA = 0.3           # was 0.5, then 0.7 (docs 10.35) -- the widen-it 
                                 # penalty, for the same unbounded-blowup reasons documented at
                                 # env.py's height-penalty history (docs, "Direct height PENALTY")
 
-# ---- gait shaping (docs 10.46/10.47) -- tried, reverted ----
+# ---- gait shaping (docs 10.46/10.47/10.48) ----
 # The outcome reward (velocity, above) never got the policy to actually try leg-stepping --
 # mean |actual vx| stuck at ~0.13-0.17 m/s across seven straight reward/curriculum/assist
 # changes (v2 through v9). Tried shaping directly on the PROCESS instead of the outcome:
 # -hip_r_vel*hip_l_vel (positive when the two hips rotate in OPPOSITE directions, clamped at 0
-# otherwise) was meant to reward the core signature of a stepping gait without being
-# satisfiable by e.g. vibrating both legs in sync. It wasn't strict enough -- v10 (10.47)
-# measured r_gait climbing hard (130->340 over 8M steps) while mean |actual vx| and its
-# correlation with target_vx both went DOWN, and fall_rate crept up too: the policy found it
-# could rack up this reward by marching/scissoring in place (real anti-phase hip motion, just
-# with no net displacement), which this term couldn't tell apart from real walking. Reverted
-# to 0 -- scale kept at 0.0 rather than deleted so the mechanism and this history stay
-# visible; re-enable only with a displacement-gated version (e.g. only pay out when it's
-# ALSO making progress toward target_vx) if this gets revisited.
-GAIT_REWARD_SCALE = 0.0
+# otherwise), meant to reward the core signature of a stepping gait without being satisfiable
+# by e.g. vibrating both legs in sync. Wasn't strict enough on its own -- v10 (10.47) measured
+# r_gait climbing hard (130->340 over 8M steps) while mean |actual vx| and its correlation
+# with target_vx both went DOWN, and fall_rate crept up too: marching/scissoring in place
+# (real anti-phase hip motion, zero net displacement) satisfied this term just as well as
+# actual walking. v11 (10.48) re-gates it by multiplying with velocity_credit (below) -- can
+# now only pay out while ALSO tracking target_vx reasonably well, closing the loophole
+# directly instead of hoping a bigger/stricter version of the same ungated shape works.
+GAIT_REWARD_SCALE = 3.0
 
 
 class LocomotionEnv(Fighter2DEnv):
@@ -256,12 +255,18 @@ class LocomotionEnv(Fighter2DEnv):
                 mujoco.mj_forward(self.model, self.data)
 
         actual_vx = self.data.qvel[self._a_root_x_dof]
-        velocity_reward = VELOCITY_REWARD_SCALE * np.exp(
-            -((actual_vx - self._target_vx) ** 2) / (2.0 * VELOCITY_SIGMA ** 2)
-        )
+        velocity_credit = np.exp(-((actual_vx - self._target_vx) ** 2) / (2.0 * VELOCITY_SIGMA ** 2))
+        velocity_reward = VELOCITY_REWARD_SCALE * velocity_credit
         hip_r_vel = self.data.qvel[self._hip_r_dof]
         hip_l_vel = self.data.qvel[self._hip_l_dof]
-        gait_reward = GAIT_REWARD_SCALE * max(0.0, -(hip_r_vel * hip_l_vel))
+        # docs 10.47: v10 measured r_gait climbing hard while mean|actual vx| and its target
+        # correlation both got WORSE -- the anti-phase condition alone was satisfiable by
+        # marching/scissoring in place, unrelated to whether the torso was actually moving.
+        # Gating by velocity_credit (the same match-quality term velocity_reward already
+        # uses) closes that loophole directly: this can only pay out while ALSO tracking
+        # target_vx reasonably well, so marching against a real (nonzero) target now earns
+        # both terms' worth of nothing instead of gait_reward alone for free.
+        gait_reward = GAIT_REWARD_SCALE * max(0.0, -(hip_r_vel * hip_l_vel)) * velocity_credit
         reward = reward + velocity_reward + gait_reward
         info["reward_breakdown"]["velocity"] = velocity_reward
         info["reward_breakdown"]["gait"] = gait_reward
