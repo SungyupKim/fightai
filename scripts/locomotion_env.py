@@ -105,7 +105,21 @@ VELOCITY_SIGMA = 0.3           # was 0.5, then 0.7 (docs 10.35) -- the widen-it 
 # actual walking. v11 (10.48) re-gates it by multiplying with velocity_credit (below) -- can
 # now only pay out while ALSO tracking target_vx reasonably well, closing the loophole
 # directly instead of hoping a bigger/stricter version of the same ungated shape works.
+#
+# v12fresh (docs 10.50): the raw product -hip_r_vel*hip_l_vel is UNBOUNDED -- measured up to
+# 83 mid-training (p90=37, p99=64), versus every other reward term in this env being
+# explicitly capped (height's ratio, stability's max(0,1-x)^2, velocity's gaussian). fall_rate
+# hit 0.96 and r_gait exploded to 5000+/episode: the policy found that flailing both legs as
+# violently as possible in opposite directions paid far more than anything else, fall risk be
+# damned. Saturating it the same cliff-free way the rest of the reward function already does
+# (1-exp(-x/ref), same family as height/stability/knee_avoid) removes the incentive to
+# escalate past a reasonable pace -- max payout is now the same regardless of whether the hips
+# move at a brisk-walk speed or a flailing one.
 GAIT_REWARD_SCALE = 3.0
+GAIT_REF = 2.0                 # raw -(hip_r_vel*hip_l_vel) at which the saturating curve is
+                                # ~63% of its ceiling -- picked well below the flailing values
+                                # (p90=37) that caused the runaway, in the plausible range for
+                                # a deliberate, controlled step rather than a wild swing
 
 
 class LocomotionEnv(Fighter2DEnv):
@@ -266,7 +280,8 @@ class LocomotionEnv(Fighter2DEnv):
         # uses) closes that loophole directly: this can only pay out while ALSO tracking
         # target_vx reasonably well, so marching against a real (nonzero) target now earns
         # both terms' worth of nothing instead of gait_reward alone for free.
-        gait_reward = GAIT_REWARD_SCALE * max(0.0, -(hip_r_vel * hip_l_vel)) * velocity_credit
+        gait_raw = max(0.0, -(hip_r_vel * hip_l_vel))
+        gait_reward = GAIT_REWARD_SCALE * (1.0 - np.exp(-gait_raw / GAIT_REF)) * velocity_credit
         reward = reward + velocity_reward + gait_reward
         info["reward_breakdown"]["velocity"] = velocity_reward
         info["reward_breakdown"]["gait"] = gait_reward
