@@ -13,7 +13,10 @@ from stable_baselines3 import PPO
 from env import FRAME_SKIP
 from locomotion_env import LocomotionEnv
 
-RESET_EVERY_SECONDS = 6.0
+RESET_EVERY_SECONDS = 20.0     # matches env.py's MAX_STEPS=1000 (*0.02s/step) -- 6.0 was
+                                # cutting episodes off at <40% of the ~700-750 step ep_len_mean
+                                # measured at the end of training, hiding whatever happens after
+                                # perturbation-recovery (docs 10.5x)
 
 
 def main():

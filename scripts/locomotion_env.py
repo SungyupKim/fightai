@@ -56,11 +56,22 @@ env_module.KNEE_AVOID_SCALE = 1.0           # was 0.25, then 0.5 (docs 10.34) --
 
 B_PARK_X = 6.0  # far enough that a/b geoms can never contact regardless of b's pose
 
-# ---- calm/harsh episode split (docs 10.36) ----
-CALM_EPISODE_FRAC = 0.6        # fraction of resets that get the low-threat "just stand/move
-                                # normally" treatment instead of the full hard curriculum
+# ---- calm/harsh episode split (docs 10.36/10.5x) ----
+# v13curriculum changed BOTH CALM_EPISODE_FRAC (0.6->0.45) and HARSH_SEVERITY_LO (0->0.5) at
+# once: deep-collapse a_out improved (67.5-72.5% -> 57.5-67.5%) but calm a_out got WORSE
+# (20% -> 40%). v13b isolated the severity-floor half alone (CALM_EPISODE_FRAC reverted to
+# 0.6, only HARSH_SEVERITY_LO=0.5 kept): calm a_out went right back to 20%, but deep-collapse
+# a_out did NOT improve (70-75%, same as baseline within noise) -- the floor change contributed
+# nothing on its own. So the deep-collapse gain in v13curriculum came from the OTHER half
+# (more harsh-episode exposure via a lower CALM_EPISODE_FRAC), which is the real calm-vs-harsh
+# tradeoff, not a free win. This run isolates that other half: CALM_EPISODE_FRAC lowered,
+# severity floor reverted to 0 (original uniform [0, severity_hi]).
+CALM_EPISODE_FRAC = 0.45       # was 0.6 -- see above; the half of v13curriculum not yet
+                                # tested alone
 CALM_SEVERITY_HI = 0.3         # calm episodes still get SOME light random perturbation
                                 # (severity sampled in [0, this]), just nothing collapse-grade
+HARSH_SEVERITY_LO = 0.0        # reverted -- measured to contribute nothing on its own (see
+                                # above), original uniform [0, severity_hi] draw
 
 # ---- velocity command ----
 TARGET_VX_RANGE = 1.0          # m/s, sampled uniform in [-range, +range] (0 = "hold position"
@@ -178,14 +189,14 @@ class LocomotionEnv(Fighter2DEnv):
     def _resample_target_vx(self):
         self._target_vx = float(self.np_random.uniform(-TARGET_VX_RANGE, TARGET_VX_RANGE))
 
-    def _randomize_a_state(self, severity_hi):
+    def _randomize_a_state(self, severity_lo, severity_hi):
         """Broader than Fighter2DEnv._collapse_pose: interpolates between the current
         (near-standing) pose and a widely-sampled target by a random severity in
         [0, severity_hi], covering everything from a light perturbation to a full collapse
         in one curriculum instead of a binary standing/collapsed split. Includes arms and
         torso pitch too, not just legs/waist -- a real stagger disturbs the whole body, not
         just the base."""
-        severity = float(self.np_random.uniform(0.0, severity_hi))
+        severity = float(self.np_random.uniform(severity_lo, severity_hi))
         legs_waist = (("hip_r", 0.6), ("hip_l", 0.6), ("waist", 0.6))
         for j, frac in legs_waist:
             qpos = self.model.joint(f"a_{j}").qposadr[0]
@@ -220,7 +231,8 @@ class LocomotionEnv(Fighter2DEnv):
         # keep the full hard curriculum -- closer to how a real fighter is only crouched
         # defensively some of the time, not permanently braced.
         is_calm = self.np_random.random() < CALM_EPISODE_FRAC
-        severity = self._randomize_a_state(CALM_SEVERITY_HI if is_calm else 1.0)
+        severity = self._randomize_a_state(0.0 if is_calm else HARSH_SEVERITY_LO,
+                                            CALM_SEVERITY_HI if is_calm else 1.0)
         # only calm episodes get the knee floor -- harsh/collapse episodes need the full
         # range to actually recover from a genuine collapse (docs 10.37)
         self._episode_knee_floor = self._min_knee_deg if is_calm else None
@@ -235,6 +247,16 @@ class LocomotionEnv(Fighter2DEnv):
 
         # push probability follows the same calm/harsh split -- a calm episode should mean
         # genuinely no threat, not just a smaller starting bend.
+        # docs 10.54: tried raising this to 0.7 (v13d) and 0.45 (v13e), both warm-started from
+        # v13c -- both improved calm and the push sub-case itself, but both regressed the
+        # plain-collapse (no-push) case back to ~75% (from v13c's 47.5%), regardless of how
+        # much the probability moved. Root cause: push/no-push split the SAME harsh-episode
+        # budget, so raising push_prob necessarily steals training volume from no-push -- a
+        # zero-sum tradeoff within the harsh branch, not a volume-of-exposure problem solvable
+        # by tuning this constant. Reverted to the original 0.4 (the v13c value, still the best
+        # weighted result found: calm 22.5%, push 67.5%, no-push 47.5%). The push sub-case
+        # itself remains unsolved -- would need a different lever (e.g. its own scaffold)
+        # rather than this split ratio.
         push_prob = 0.0 if is_calm else 0.4
         if self.np_random.random() < push_prob:
             self.data.qvel[self._a_root_x_dof] += self.np_random.uniform(-2.5, 2.5)
