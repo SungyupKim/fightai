@@ -32,7 +32,10 @@ def main():
     src_obs_dim = src.observation_space.shape[0]
 
     vec_env = make_vec_env(Fighter2DEnv, n_envs=1, env_kwargs={"opponent_policy_path": None})
-    dst = PPO("MlpPolicy", vec_env, device="cpu")
+    # verbose=1 so downstream training (e.g. train_league.py) actually logs progress -- a
+    # transplant built without it silently carries verbose=0 into every round that descends
+    # from it, since PPO.load() otherwise just restores whatever was saved.
+    dst = PPO("MlpPolicy", vec_env, device="cpu", verbose=1)
     dst_obs_dim = dst.observation_space.shape[0]
 
     assert src_obs_dim == dst_obs_dim + 1, (
