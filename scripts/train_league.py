@@ -123,7 +123,15 @@ def main():
         env_kwargs={"opponent_policy_path": args.opponent_from},
     )
 
-    custom_objects = {"ent_coef": args.ent_coef} if args.ent_coef is not None else None
+    # verbose=1 forced regardless of what the checkpoint carries -- a checkpoint built by
+    # transplant_locomotion.py (or any other PPO(...) construction that forgot to pass
+    # verbose=1) silently saves verbose=0, which PPO.load otherwise restores as-is, so every
+    # round descending from it trains for real but prints NO rollout table at all (confirmed:
+    # zero `total_timesteps` log lines across 4 full rounds). Loud-by-default here means a
+    # future upstream mistake like that one can't silently blind monitoring again.
+    custom_objects = {"verbose": 1}
+    if args.ent_coef is not None:
+        custom_objects["ent_coef"] = args.ent_coef
     model = PPO.load(args.init_from, env=vec_env, device=args.device, custom_objects=custom_objects)
     if args.ent_coef is not None:
         print(f"[league] overriding ent_coef -> {args.ent_coef}", flush=True)
