@@ -67,7 +67,7 @@ class OpponentRewardCallback(BaseCallback):
 
 
 class BreakdownCallback(BaseCallback):
-    KEYS = ["strike", "engage", "progress", "height", "stability", "stance"]
+    KEYS = ["strike", "engage", "progress", "height", "stability", "stance", "contact_stance"]
 
     def __init__(self, window=100):
         super().__init__()
