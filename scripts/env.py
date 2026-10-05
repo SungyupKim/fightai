@@ -28,6 +28,15 @@ FALL_HEIGHT = 0.55
 # concentrated practice at it. Occasionally starting an episode already collapsed gives it that
 # practice directly instead of waiting for it to happen by accident.
 GETUP_CURRICULUM_PROB = 0.25   # fraction of episodes, per fighter independently, that start down
+# Standing-balance variety: the league's own partners stand in similar postures, so a standing
+# fighter rarely meets a perturbed start. Measured (docs 10.5x): ~80% of falls had no attack
+# preceding them -- falling while just standing/moving, not while attacking. A mild stance
+# perturbation and light shove at reset (per fighter, independently) gives standing balance the
+# same kind of practice GETUP_CURRICULUM_PROB gives recovery.
+START_PERTURB_PROB = 0.0       # was 0.3 -- stance perturbation at reset showed no benefit on the fixed-seed gate (docs 10.5x)
+START_PERTURB_RAD = 0.15       # max per-joint offset (rad, ~9 deg) for that perturbation
+START_PUSH_PROB = 0.0          # was 0.2 -- same as above
+START_PUSH_VX = 1.0            # max horizontal velocity (m/s) for that shove
 GETUP_SETTLE_STEPS = 300       # physics-only (zero ctrl) steps so gravity actually finishes folding
                                 # the bent-knee starting pose down to the ground (measured: 60 steps
                                 # left it barely settled, still above FALL_HEIGHT 100% of the time;
@@ -527,6 +536,18 @@ class Fighter2DEnv(gym.Env):
             for _ in range(GETUP_SETTLE_STEPS):
                 mujoco.mj_step(self.model, self.data)
             self.data.ctrl[:] = saved_ctrl
+
+        for prefix in ("a_", "b_"):
+            if self.np_random.random() < START_PERTURB_PROB:
+                for j in ("hip_r", "hip_l", "waist", "knee_r", "knee_l", "ankle_r", "ankle_l"):
+                    jnt = self.model.joint(f"{prefix}{j}")
+                    qadr = jnt.qposadr[0]
+                    lo, hi = jnt.range
+                    offset = self.np_random.uniform(-START_PERTURB_RAD, START_PERTURB_RAD)
+                    self.data.qpos[qadr] = np.clip(self.data.qpos[qadr] + offset, lo, hi)
+            if self.np_random.random() < START_PUSH_PROB:
+                self.data.qvel[self.model.joint(f"{prefix}root_x").dofadr[0]] += self.np_random.uniform(-START_PUSH_VX, START_PUSH_VX)
+        mujoco.mj_forward(self.model, self.data)
 
         self.step_count = 0
         self.health = {"a": 100.0, "b": 100.0}
