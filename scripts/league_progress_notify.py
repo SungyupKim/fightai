@@ -1,9 +1,9 @@
-"""Periodically parses selfplay_league_loop.sh's combined log (round announcements +
-train_league.py's SB3 table output, all appended to the same file) and sends a KakaoTalk
-progress summary -- same pattern as locomotion_progress_notify.py, for watching a league
-run without staying at the terminal. Standalone loop, independent of the training process.
+"""Watches selfplay_league_loop.sh's combined log and sends one KakaoTalk summary per finished
+league round -- polls every minute, sends when the round number advances (the summary is the
+last stats block of the round that just finished), plus a final message when the whole run
+completes. Standalone loop, independent of the training process.
 
-Usage: league_progress_notify.py [--interval-seconds 2700] [--log PATH] [--rounds N]
+Usage: league_progress_notify.py [--poll-seconds 60] [--log PATH]
 """
 import argparse
 import pathlib
@@ -17,71 +17,86 @@ DEFAULT_LOG = SCRIPTS.parent / "checkpoints" / "league_loop.log"
 
 FIELDS = ["total_timesteps", "ep_rew_mean", "b_ep_rew_mean", "r_strike", "r_engage", "std"]
 ROUND_RE = re.compile(r"\[league\] round (\d+)/(\d+): (\w+) \(\w\) vs frozen \w+")
+DONE_RE = re.compile(r"\[league\] all (\d+) rounds complete")
+STAT_RE = re.compile(r"\|\s*(\w+)\s*\|\s*([-+\d.eE]+)\s*\|")
 
 
-def parse_latest_block(log_path):
-    """league_loop.log accumulates across EVERY league run this project has ever done (months
-    of history), and a round announcement line is tiny compared to a full SB3 table block --
-    right after a fresh round starts, the most recent `--timesteps` worth of training may not
-    have printed a single table yet. Scanning backwards past the round-start boundary in that
-    gap would silently pick up stale metrics from an old, unrelated run instead of reporting
-    "no stats yet" -- so FIELDS are only searched in lines AFTER the latest round announcement,
-    never before it."""
+def read_tail_lines(log_path):
     with open(log_path, "rb") as f:
         f.seek(0, 2)
         size = f.tell()
         f.seek(max(0, size - 40_000))
-        tail = f.read().decode(errors="ignore")
-    lines = tail.splitlines()
-    round_idx = None
-    round_info = None
+        return f.read().decode(errors="ignore").splitlines()
+
+
+def latest_round(lines):
+    """Returns (index, round_n, total, side) of the most recent round announcement, or None."""
     for i in range(len(lines) - 1, -1, -1):
         m = ROUND_RE.match(lines[i].strip())
         if m:
-            round_idx = i
-            round_info = (int(m.group(1)), int(m.group(2)), m.group(3))
-            break
+            return i, int(m.group(1)), int(m.group(2)), m.group(3)
+    return None
+
+
+def stats_between(lines, start, end):
+    """Latest value of each FIELD appearing in lines[start:end], searching backwards."""
     values = {}
-    search_lines = lines[round_idx:] if round_idx is not None else lines
-    for line in reversed(search_lines):
-        m = re.match(r"\|\s*(\w+)\s*\|\s*([-+\d.eE]+)\s*\|", line.strip())
+    for line in reversed(lines[start:end]):
+        m = STAT_RE.match(line.strip())
         if m and m.group(1) in FIELDS and m.group(1) not in values:
             values[m.group(1)] = float(m.group(2))
         if len(values) == len(FIELDS):
             break
-    return values, round_info
+    return values
+
+
+def format_round_message(round_n, total, values):
+    steps_m = values.get("total_timesteps", 0) / 1_000_000
+    return (
+        f"[fightai] 리그 라운드 {round_n}/{total} 완료\n"
+        f"누적 스텝: {steps_m:.2f}M\n"
+        f"std: {values.get('std', float('nan')):.3f}\n"
+        f"ep_rew_mean: {values.get('ep_rew_mean', float('nan')):.1f}\n"
+        f"b_ep_rew_mean: {values.get('b_ep_rew_mean', float('nan')):.1f}\n"
+        f"r_strike: {values.get('r_strike', float('nan')):.1f}  "
+        f"r_engage: {values.get('r_engage', float('nan')):.1f}"
+    )
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--interval-seconds", type=int, default=2700)  # 45 min
+    parser.add_argument("--poll-seconds", type=int, default=60)
     parser.add_argument("--log", type=str, default=str(DEFAULT_LOG))
     args = parser.parse_args()
     log_path = pathlib.Path(args.log)
 
+    last_round = None
+    final_sent = False
     while True:
-        time.sleep(args.interval_seconds)
         try:
-            v, round_info = parse_latest_block(log_path)
-            if not v:
-                continue
-            round_line = (f"라운드: {round_info[0]}/{round_info[1]} ({round_info[2]} 학습 중)"
-                          if round_info else "라운드: ?")
-            steps_m = v.get("total_timesteps", 0) / 1_000_000
-            msg = (
-                f"[fightai] 리그 진행 상황\n"
-                f"{round_line}\n"
-                f"스텝: {steps_m:.2f}M\n"
-                f"std: {v.get('std', float('nan')):.3f}\n"
-                f"ep_rew_mean: {v.get('ep_rew_mean', float('nan')):.1f}\n"
-                f"b_ep_rew_mean: {v.get('b_ep_rew_mean', float('nan')):.1f}\n"
-                f"r_strike: {v.get('r_strike', float('nan')):.1f}  "
-                f"r_engage: {v.get('r_engage', float('nan')):.1f}"
-            )
-            send_message(msg)
-            print(f"[league-progress-notify] sent: {msg}", flush=True)
+            lines = read_tail_lines(log_path)
+            found = latest_round(lines)
+            if found is not None:
+                idx, round_n, total, _side = found
+                if last_round is None:
+                    last_round = round_n  # don't send for whatever was already in progress at startup
+                elif round_n > last_round:
+                    # the just-finished round's final stats sit right before the new round's line
+                    values = stats_between(lines, 0, idx)
+                    if values:
+                        msg = format_round_message(last_round, total, values)
+                        send_message(msg)
+                        print(f"[league-progress-notify] sent round {last_round}", flush=True)
+                    last_round = round_n
+            if not final_sent and any(DONE_RE.match(l.strip()) for l in lines[-50:]):
+                values = stats_between(lines, 0, len(lines))
+                if values and found is not None:
+                    send_message(format_round_message(found[1], found[2], values) + "\n전체 리그 완료")
+                    print("[league-progress-notify] sent final", flush=True)
+                final_sent = True
         except Exception as e:
             print(f"[league-progress-notify] failed: {e}", flush=True)
+        time.sleep(args.poll_seconds)
 
 
 if __name__ == "__main__":
