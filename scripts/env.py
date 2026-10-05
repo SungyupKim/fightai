@@ -216,6 +216,11 @@ Z_VEL_REF = 1.0
 # toward an ever-wider (eventually anatomically absurd) split.
 STANCE_REWARD_SCALE = 0.25
 STANCE_GAP_REF = 0.4
+# Stance while touching the opponent (docs 10.5x): falls during clinches had a narrow base
+# (feet ~0.11m apart, straight knees) while the fighters that held had a wide base (~0.34m, bent
+# knees). The plain stance reward above is near zero because the policy keeps its feet together
+# outside contact, so this adds a small bonus gated on actual contact, scaled by the same gap.
+CONTACT_STANCE_SCALE = 0.3
 
 # Reward for keeping knees off the ground. First version used the existing contact-based
 # knees_down count (0/1/2, from _leg_ground_contacts) -- but that's a binary post-hoc signal: it
@@ -705,6 +710,9 @@ class Fighter2DEnv(gym.Env):
         b_stance_gap = abs(b_foot_xs[0] - b_foot_xs[1])
         a_stance_reward = STANCE_REWARD_SCALE * min(1.0, a_stance_gap / STANCE_GAP_REF) ** 2
         b_stance_reward = STANCE_REWARD_SCALE * min(1.0, b_stance_gap / STANCE_GAP_REF) ** 2
+        contact_gate = float(mutual_contact)
+        a_contact_stance = CONTACT_STANCE_SCALE * contact_gate * min(1.0, a_stance_gap / STANCE_GAP_REF)
+        b_contact_stance = CONTACT_STANCE_SCALE * contact_gate * min(1.0, b_stance_gap / STANCE_GAP_REF)
         # log form: no free zone (always some gradient to close in), but steep only near contact
         # range and flattening out at long range, instead of an unbounded linear penalty
         engage_penalty = np.log1p(foot_dist) * ENGAGE_PENALTY_SCALE
@@ -771,6 +779,7 @@ class Fighter2DEnv(gym.Env):
             "height": a_height_reward,
             "stability": a_stability_reward,
             "stance": a_stance_reward,
+            "contact_stance": a_contact_stance,
             "knee_avoid": a_knee_avoid_reward,
             "recovery": a_recovery_reward,
             "jerk": -(jerk_penalty if jerk_penalty is not None else 0.0),
@@ -787,6 +796,7 @@ class Fighter2DEnv(gym.Env):
                 "height": b_height_reward,
                 "stability": b_stability_reward,
                 "stance": b_stance_reward,
+                "contact_stance": b_contact_stance,
                 "knee_avoid": b_knee_avoid_reward,
                 "recovery": b_recovery_reward,
                 "jerk": -b_jerk_penalty,
