@@ -37,6 +37,11 @@ START_PERTURB_PROB = 0.0       # was 0.3 -- stance perturbation at reset showed 
 START_PERTURB_RAD = 0.15       # max per-joint offset (rad, ~9 deg) for that perturbation
 START_PUSH_PROB = 0.0          # was 0.2 -- same as above
 START_PUSH_VX = 1.0            # max horizontal velocity (m/s) for that shove
+# Clinch-start curriculum (docs 10.5x): falls concentrate in contact, so a fraction of episodes
+# start with the fighters already close (torso centers CLINCH_GAP_RANGE apart, default ~1.2m),
+# giving direct practice at exactly the situation where survival vs. falling separates.
+CLINCH_START_PROB = 0.25
+CLINCH_GAP_RANGE = (0.5, 0.7)
 GETUP_SETTLE_STEPS = 300       # physics-only (zero ctrl) steps so gravity actually finishes folding
                                 # the bent-knee starting pose down to the ground (measured: 60 steps
                                 # left it barely settled, still above FALL_HEIGHT 100% of the time;
@@ -541,6 +546,12 @@ class Fighter2DEnv(gym.Env):
             for _ in range(GETUP_SETTLE_STEPS):
                 mujoco.mj_step(self.model, self.data)
             self.data.ctrl[:] = saved_ctrl
+
+        if self.np_random.random() < CLINCH_START_PROB:
+            mujoco.mj_forward(self.model, self.data)
+            gap_now = self.data.xpos[self.b_torso_id][0] - self.data.xpos[self.a_torso_id][0]
+            gap_new = self.np_random.uniform(*CLINCH_GAP_RANGE)
+            self.data.qpos[self.model.joint("b_root_x").qposadr[0]] += gap_new - gap_now
 
         for prefix in ("a_", "b_"):
             if self.np_random.random() < START_PERTURB_PROB:
