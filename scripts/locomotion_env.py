@@ -134,7 +134,8 @@ GAIT_REF = 2.0                 # raw -(hip_r_vel*hip_l_vel) at which the saturat
 
 
 class LocomotionEnv(Fighter2DEnv):
-    def __init__(self, render_mode=None):
+    def __init__(self, render_mode=None, stand_only=False):
+        self._stand_only = stand_only
         super().__init__(render_mode=render_mode, opponent_policy_path=None, getup_curriculum_prob=0.0)
         self._b_root_x_qpos = self.model.joint("b_root_x").qposadr[0]
         self._b_root_x_dof = self.model.joint("b_root_x").dofadr[0]
@@ -266,7 +267,7 @@ class LocomotionEnv(Fighter2DEnv):
         return self._obs(), info
 
     def step(self, action):
-        if self._is_calm and self._assist_scale:
+        if self._is_calm and self._assist_scale and not self._stand_only:
             self.data.qfrc_applied[self._a_root_x_dof] = self._assist_scale * self._target_vx
         else:
             self.data.qfrc_applied[self._a_root_x_dof] = 0.0
@@ -292,7 +293,7 @@ class LocomotionEnv(Fighter2DEnv):
 
         actual_vx = self.data.qvel[self._a_root_x_dof]
         velocity_credit = np.exp(-((actual_vx - self._target_vx) ** 2) / (2.0 * VELOCITY_SIGMA ** 2))
-        velocity_reward = VELOCITY_REWARD_SCALE * velocity_credit
+        velocity_reward = 0.0 if self._stand_only else VELOCITY_REWARD_SCALE * velocity_credit
         hip_r_vel = self.data.qvel[self._hip_r_dof]
         hip_l_vel = self.data.qvel[self._hip_l_dof]
         # docs 10.47: v10 measured r_gait climbing hard while mean|actual vx| and its target
@@ -303,7 +304,7 @@ class LocomotionEnv(Fighter2DEnv):
         # target_vx reasonably well, so marching against a real (nonzero) target now earns
         # both terms' worth of nothing instead of gait_reward alone for free.
         gait_raw = max(0.0, -(hip_r_vel * hip_l_vel))
-        gait_reward = GAIT_REWARD_SCALE * (1.0 - np.exp(-gait_raw / GAIT_REF)) * velocity_credit
+        gait_reward = 0.0 if self._stand_only else GAIT_REWARD_SCALE * (1.0 - np.exp(-gait_raw / GAIT_REF)) * velocity_credit
         reward = reward + velocity_reward + gait_reward
         info["reward_breakdown"]["velocity"] = velocity_reward
         info["reward_breakdown"]["gait"] = gait_reward
