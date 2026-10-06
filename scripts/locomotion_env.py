@@ -281,6 +281,11 @@ class LocomotionEnv(Fighter2DEnv):
         return self._obs(), info
 
     def step(self, action):
+        if self._stand_only:
+            # the horizontal thrust actuator (root_x) isn't a leg or arm -- a real body can't push
+            # itself sideways from nothing, and the trained policy saturated it on ~half of steps
+            action = np.array(action, dtype=np.float32, copy=True)
+            action[0] = 0.0
         if self._is_calm and self._assist_scale and not self._stand_only:
             self.data.qfrc_applied[self._a_root_x_dof] = self._assist_scale * self._target_vx
         else:
