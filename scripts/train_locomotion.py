@@ -211,6 +211,8 @@ def main():
                          help="skip the knee scaffold straight to its permanent floor from "
                               "step 0 (docs 10.44/10.45) -- pass this on any --init-from "
                               "continuation of a run whose knee schedule already finished")
+    parser.add_argument("--stand-only", action="store_true",
+                         help="zero the velocity and gait rewards -- learn standing from any posture alone")
     parser.add_argument("--assist-already-relaxed", action="store_true",
                          help="same as --knee-already-relaxed, for the velocity assist scaffold")
     args = parser.parse_args()
@@ -221,7 +223,8 @@ def main():
     run_id = time.strftime("%Y%m%d_%H%M%S")
     run_name = f"{args.out}_{run_id}"
 
-    vec_env = make_vec_env(LocomotionEnv, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv)
+    vec_env = make_vec_env(LocomotionEnv, n_envs=args.n_envs, vec_env_cls=SubprocVecEnv,
+                           env_kwargs={"stand_only": args.stand_only})
 
     if args.init_from:
         custom_objects = {"ent_coef": args.ent_coef} if args.ent_coef is not None else None
