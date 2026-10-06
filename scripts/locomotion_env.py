@@ -140,6 +140,12 @@ GAIT_REF = 2.0                 # raw -(hip_r_vel*hip_l_vel) at which the saturat
 BRACE_REWARD_SCALE = 1.0
 BRACE_VZ_REF = 1.0             # m/s downward torso speed at which the fall gate saturates
 
+# ---- centre-of-mass over support (stand-only, docs 10.5x) ----
+# Reward for keeping the whole body's centre of mass horizontally over the feet (bounded, cliff-free).
+# Only the horizontal position counts, so it doesn't reward crouching the way a height term would.
+COM_REWARD_SCALE = 1.0
+COM_MARGIN_REF = 0.10          # m inside the support edge at which the reward saturates
+
 
 class LocomotionEnv(Fighter2DEnv):
     def __init__(self, render_mode=None, stand_only=False):
@@ -184,6 +190,8 @@ class LocomotionEnv(Fighter2DEnv):
         # you find your own coordination, not doing the walking for you. 0.0 = no-op default.
         self._assist_scale = 0.0
 
+        self._a_bodies = [i for i in range(self.model.nbody) if self.model.body(i).name.startswith("a_")]
+        self._a_masses = np.array([self.model.body_mass[i] for i in self._a_bodies])
         base_dim = self.observation_space.shape[0]
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(base_dim + 1,), dtype=np.float32)
 
@@ -329,10 +337,18 @@ class LocomotionEnv(Fighter2DEnv):
         knee_mean = 0.5 * (self.data.qpos[self._knee_r_qpos] + self.data.qpos[self._knee_l_qpos])
         knee_straight = min(1.0, max(0.0, (knee_mean + np.deg2rad(140.0)) / np.deg2rad(140.0)))
         brace_reward = BRACE_REWARD_SCALE * fall_gate * knee_straight
-        reward = reward + velocity_reward + gait_reward + brace_reward
+        com_reward = 0.0
+        if self._stand_only:
+            com_x = np.sum(self._a_masses * self.data.xipos[self._a_bodies, 0]) / self._a_masses.sum()
+            feet_x = [self.data.site_xpos[s][0] for s in self.a_feet]
+            lo, hi = min(feet_x) - 0.12, max(feet_x) + 0.12
+            margin = min(com_x - lo, hi - com_x)
+            com_reward = COM_REWARD_SCALE * min(1.0, max(0.0, margin / COM_MARGIN_REF))
+        reward = reward + velocity_reward + gait_reward + brace_reward + com_reward
         info["reward_breakdown"]["velocity"] = velocity_reward
         info["reward_breakdown"]["gait"] = gait_reward
         info["reward_breakdown"]["brace"] = brace_reward
+        info["reward_breakdown"]["com"] = com_reward
         info["target_vx"] = self._target_vx
 
         if RESAMPLE_EVERY_STEPS is not None and self.step_count % RESAMPLE_EVERY_STEPS == 0:

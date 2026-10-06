@@ -20,7 +20,9 @@ FIGHTER_TEMPLATE = """
 
         <body name="{p}head" pos="0 0 0.22">
           <joint name="{p}head" type="hinge" axis="0 {ay} 0" range="-40 40" damping="1" armature="0.01"/>
-          <geom name="{p}head" type="sphere" size="0.13" pos="0 0 0.13" rgba="{color}"/>
+          <!-- density 600 (default 1000): head ~5.5 kg instead of ~9.2 kg -- human head is ~7-8% of body mass,
+               and the 12% head was making the upper body a heavy, easily-tipping pendulum (docs 10.5x) -->
+          <geom name="{p}head" type="sphere" size="0.13" pos="0 0 0.13" density="600" rgba="{color}"/>
         </body>
 
         <body name="{p}upper_arm_r" pos="0 -0.07 0.20">
@@ -85,7 +87,8 @@ FIGHTER_TEMPLATE = """
                  layout would have the toe pointing away from the opponent for whichever fighter
                  faces -x. Caught when the toe joint made a backwards-pointing toe visually
                  obvious, but the same asymmetry was already latent in the foot capsule itself. -->
-            <geom name="{p}foot_r" type="capsule" fromto="{heel_x} 0 0 {toe_x} 0 0" size="0.07" rgba="{color}"/>
+            <!-- density 400 (default 1000): foot ~1.6 kg instead of ~4 kg, closer to human foot mass share -->
+            <geom name="{p}foot_r" type="capsule" fromto="{heel_x} 0 0 {toe_x} 0 0" size="0.07" density="400" rgba="{color}"/>
             <site name="{p}foot_r" pos="0 0 0" size="0.02"/>
             <!-- toe: passive (no actuator, no RL action dim) hinge with a spring (stiffness)
                  pulling it back to neutral, like a real toe's passive compliance during push-off
@@ -108,7 +111,8 @@ FIGHTER_TEMPLATE = """
           <geom name="{p}shin_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="{color}"/>
           <body name="{p}foot_l" pos="0 0 -0.42">
             <joint name="{p}ankle_l" type="hinge" axis="0 {ay} 0" range="-30 30" damping="1.5" armature="0.02"/>
-            <geom name="{p}foot_l" type="capsule" fromto="{heel_x} 0 0 {toe_x} 0 0" size="0.07" rgba="{color}"/>
+            <!-- density 400 (default 1000): foot ~1.6 kg instead of ~4 kg, closer to human foot mass share -->
+            <geom name="{p}foot_l" type="capsule" fromto="{heel_x} 0 0 {toe_x} 0 0" size="0.07" density="400" rgba="{color}"/>
             <site name="{p}foot_l" pos="0 0 0" size="0.02"/>
             <body name="{p}toe_l" pos="{toe_x} 0 0">
               <joint name="{p}toe_l" type="hinge" axis="0 {ay} 0" range="-10 45" stiffness="8" damping="0.5" armature="0.01"/>
