@@ -132,6 +132,14 @@ GAIT_REF = 2.0                 # raw -(hip_r_vel*hip_l_vel) at which the saturat
                                 # (p90=37) that caused the runaway, in the plausible range for
                                 # a deliberate, controlled step rather than a wild swing
 
+# ---- fall brace reflex (docs 10.5x) ----
+# While the torso is dropping fast, reward straightening the knees -- the policy otherwise
+# buckles like a folding stick when it falls (hips and knees both bend further as it goes
+# down, measured on the stand-only checkpoint). Gated on downward torso speed so it only pays
+# out during an actual fall, and bounded (0..BRACE_REWARD_SCALE per step) like the other terms.
+BRACE_REWARD_SCALE = 1.0
+BRACE_VZ_REF = 1.0             # m/s downward torso speed at which the fall gate saturates
+
 
 class LocomotionEnv(Fighter2DEnv):
     def __init__(self, render_mode=None, stand_only=False):
@@ -311,9 +319,15 @@ class LocomotionEnv(Fighter2DEnv):
         # both terms' worth of nothing instead of gait_reward alone for free.
         gait_raw = max(0.0, -(hip_r_vel * hip_l_vel))
         gait_reward = 0.0 if self._stand_only else GAIT_REWARD_SCALE * (1.0 - np.exp(-gait_raw / GAIT_REF)) * velocity_credit
-        reward = reward + velocity_reward + gait_reward
+        vz_down = -self.data.qvel[self.a_z_dof]
+        fall_gate = min(1.0, max(0.0, vz_down / BRACE_VZ_REF))
+        knee_mean = 0.5 * (self.data.qpos[self._knee_r_qpos] + self.data.qpos[self._knee_l_qpos])
+        knee_straight = min(1.0, max(0.0, (knee_mean + np.deg2rad(140.0)) / np.deg2rad(140.0)))
+        brace_reward = BRACE_REWARD_SCALE * fall_gate * knee_straight
+        reward = reward + velocity_reward + gait_reward + brace_reward
         info["reward_breakdown"]["velocity"] = velocity_reward
         info["reward_breakdown"]["gait"] = gait_reward
+        info["reward_breakdown"]["brace"] = brace_reward
         info["target_vx"] = self._target_vx
 
         if RESAMPLE_EVERY_STEPS is not None and self.step_count % RESAMPLE_EVERY_STEPS == 0:
