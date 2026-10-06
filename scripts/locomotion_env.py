@@ -136,6 +136,12 @@ GAIT_REF = 2.0                 # raw -(hip_r_vel*hip_l_vel) at which the saturat
 class LocomotionEnv(Fighter2DEnv):
     def __init__(self, render_mode=None, stand_only=False):
         self._stand_only = stand_only
+        if stand_only:
+            # standing has to be learned from the legs and arms alone -- the always-on torso PD
+            # assist (env.py BALANCE_KP/KD) would otherwise carry the balance (docs 10.5x: with it
+            # removed, the stand-only policy never kept its footing in an episode)
+            env_module.BALANCE_KP = 0.0
+            env_module.BALANCE_KD = 0.0
         super().__init__(render_mode=render_mode, opponent_policy_path=None, getup_curriculum_prob=0.0)
         self._b_root_x_qpos = self.model.joint("b_root_x").qposadr[0]
         self._b_root_x_dof = self.model.joint("b_root_x").dofadr[0]
