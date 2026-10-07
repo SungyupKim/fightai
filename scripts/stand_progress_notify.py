@@ -35,6 +35,7 @@ FIELDS = {
     "ep_len_mean": "평균 버틴 스텝(학습 로그, 참고용)",
     "r_com": "무게중심 보상(참고용)",
     "r_brace": "다리 펴기 보상(참고용)",
+    "r_stand_streak": "연속 서기 보상(참고용)",
     "std": "행동 흔들림(std)",
 }
 LINE_RE = re.compile(r"\|\s*([\w/]+)\s*\|\s*([-+\d.eE]+)\s*\|")
@@ -119,6 +120,7 @@ def format_message(v, total, gate_rate, gate_ckpt):
     lines.append(f"{FIELDS['ep_len_mean']}: {v.get('ep_len_mean', float('nan')):.0f}스텝")
     lines.append(f"{FIELDS['r_com']}: {v.get('r_com', float('nan')):.1f}")
     lines.append(f"{FIELDS['r_brace']}: {v.get('r_brace', float('nan')):.1f}")
+    lines.append(f"{FIELDS['r_stand_streak']}: {v.get('r_stand_streak', float('nan')):.1f}")
     lines.append(f"{FIELDS['std']}: {v.get('std', float('nan')):.3f}")
     return "\n".join(lines)
 

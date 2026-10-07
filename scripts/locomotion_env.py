@@ -27,7 +27,7 @@ import numpy as np
 from gymnasium import spaces
 
 import env as env_module
-from env import Fighter2DEnv, GETUP_SETTLE_STEPS
+from env import FALL_HEIGHT, Fighter2DEnv, GETUP_SETTLE_STEPS
 
 # Combat reward terms are meaningless with 'b' parked far away and inert. Zeroing these at
 # module level is per-process only (SubprocVecEnv gives each worker its own copy of the
@@ -146,6 +146,21 @@ BRACE_VZ_REF = 1.0             # m/s downward torso speed at which the fall gate
 COM_REWARD_SCALE = 1.0
 COM_MARGIN_REF = 0.10          # m inside the support edge at which the reward saturates
 
+# ---- continuous stand streak (stand-only, 2026-10-08) ----
+# height/stability/com/brace all pay out per-step regardless of history, so a policy that
+# falls and gets back up every ~1-2s scores almost as well as one that never falls at all --
+# measured directly on v7 at 50M steps: training-log fall_rate down to ~0.1 and ep_len_mean
+# up near MAX_STEPS, but the real fixed-seed/deterministic 3-second-survival gate was still
+# 0% (median fall at step 28, same as the very first stand-only checkpoints). DOWN_RECOVERY_STEPS
+# gives it 5 whole seconds to recover before a_out ends the episode, which is plenty of room to
+# cycle fall->recover->fall indefinitely without ever being penalized for breaking a stand. This
+# term pays directly for the thing the gate actually measures: steps spent continuously above
+# FALL_HEIGHT, ramping up to the full scale once that streak reaches the gate's own 3-second
+# (150-step) window, and dropping back to 0 the instant the streak breaks -- so every fall now
+# costs whatever streak had been built up, not just a brief dip in height/stability.
+STAND_STREAK_SCALE = 3.0       # matches HEAD_HEIGHT_REWARD_SCALE's max -- meant to dominate
+STAND_STREAK_REF = 150         # steps (3s) -- same window the eval gate uses
+
 
 class LocomotionEnv(Fighter2DEnv):
     def __init__(self, render_mode=None, stand_only=False):
@@ -189,6 +204,7 @@ class LocomotionEnv(Fighter2DEnv):
         # gating as the knee floor) -- like someone lightly pushing you the right way while
         # you find your own coordination, not doing the walking for you. 0.0 = no-op default.
         self._assist_scale = 0.0
+        self._stand_streak = 0
 
         self._a_bodies = [i for i in range(self.model.nbody) if self.model.body(i).name.startswith("a_")]
         self._a_masses = np.array([self.model.body_mass[i] for i in self._a_bodies])
@@ -260,6 +276,7 @@ class LocomotionEnv(Fighter2DEnv):
         # range to actually recover from a genuine collapse (docs 10.37)
         self._episode_knee_floor = self._min_knee_deg if is_calm else None
         self._is_calm = is_calm
+        self._stand_streak = 0
         mujoco.mj_forward(self.model, self.data)
 
         saved_ctrl = self.data.ctrl.copy()
@@ -359,11 +376,19 @@ class LocomotionEnv(Fighter2DEnv):
             lo, hi = min(feet_x) - 0.12, max(feet_x) + 0.12
             margin = min(com_x - lo, hi - com_x)
             com_reward = COM_REWARD_SCALE * min(1.0, max(0.0, margin / COM_MARGIN_REF))
-        reward = reward + velocity_reward + gait_reward + brace_reward + com_reward
+        stand_streak_reward = 0.0
+        if self._stand_only:
+            if self.data.xpos[self.a_torso_id][2] >= FALL_HEIGHT:
+                self._stand_streak += 1
+            else:
+                self._stand_streak = 0
+            stand_streak_reward = STAND_STREAK_SCALE * min(1.0, self._stand_streak / STAND_STREAK_REF)
+        reward = reward + velocity_reward + gait_reward + brace_reward + com_reward + stand_streak_reward
         info["reward_breakdown"]["velocity"] = velocity_reward
         info["reward_breakdown"]["gait"] = gait_reward
         info["reward_breakdown"]["brace"] = brace_reward
         info["reward_breakdown"]["com"] = com_reward
+        info["reward_breakdown"]["stand_streak"] = stand_streak_reward
         info["target_vx"] = self._target_vx
 
         if RESAMPLE_EVERY_STEPS is not None and self.step_count % RESAMPLE_EVERY_STEPS == 0:
