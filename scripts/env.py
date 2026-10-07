@@ -18,7 +18,16 @@ MODEL_PATH = pathlib.Path(__file__).resolve().parent.parent / "models" / "fighte
 # ---- episode / physics basics ----
 FRAME_SKIP = 4
 MAX_STEPS = 1000               # longer cap so recoverable knockdowns have room to play out
-FALL_HEIGHT = 0.55
+# Raised 0.55->0.70 (2026-10-08, stand-only diagnosis): 0.55 was tuned for combat so a crouched
+# fighting-ready stance (measured torso_z=0.558) still counted as "not down" -- but that same
+# low line let a stable kneeling/seiza-like rest pose (shins flat on the ground, torso_z=0.598,
+# not standing on the feet at all) count as "not fallen" too, which the stand-only streak reward
+# (locomotion_env.py) would otherwise pay out in full for. 0.70 sits above a relaxed standing
+# posture with soft knees (0.704 measured) and above that kneeling pose, so it specifically
+# requires being up on the legs. Also used for combat knockdowns (a_out/b_out) -- a deeper
+# crouch than before now counts as "down" there too, which is fine since the combat league gets
+# retrained from scratch once the stand-only body/policy is solid anyway.
+FALL_HEIGHT = 0.70
 
 # ---- get-up curriculum ----
 # Measured: even with RECOVERY_REWARD_SCALE raised, a downed fighter's legs/waist were already

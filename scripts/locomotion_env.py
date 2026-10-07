@@ -155,9 +155,10 @@ COM_MARGIN_REF = 0.10          # m inside the support edge at which the reward s
 # gives it 5 whole seconds to recover before a_out ends the episode, which is plenty of room to
 # cycle fall->recover->fall indefinitely without ever being penalized for breaking a stand. This
 # term pays directly for the thing the gate actually measures: steps spent continuously above
-# FALL_HEIGHT, ramping up to the full scale once that streak reaches the gate's own 3-second
-# (150-step) window, and dropping back to 0 the instant the streak breaks -- so every fall now
-# costs whatever streak had been built up, not just a brief dip in height/stability.
+# FALL_HEIGHT (raised 0.55->0.70 in env.py the same day, for exactly this reason -- see its
+# comment there), ramping up to the full scale once that streak reaches the gate's own
+# 3-second (150-step) window, and dropping back to 0 the instant the streak breaks -- so every
+# fall now costs whatever streak had been built up, not just a brief dip in height/stability.
 STAND_STREAK_SCALE = 3.0       # matches HEAD_HEIGHT_REWARD_SCALE's max -- meant to dominate
 STAND_STREAK_REF = 150         # steps (3s) -- same window the eval gate uses
 
