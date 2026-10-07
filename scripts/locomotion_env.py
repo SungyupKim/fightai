@@ -308,6 +308,21 @@ class LocomotionEnv(Fighter2DEnv):
         self.data.qpos[self._b_root_x_qpos] = B_PARK_X
         self.data.qvel[self._b_root_x_dof] = 0.0
 
+        if self._stand_only:
+            # "stance"/"contact_stance" are inherited unchanged from the combat reward --
+            # they directly pay for a WIDER front-back foot gap (up to STANCE_GAP_REF=0.4m),
+            # meant to keep a fighter's footwork from narrowing into an easily-swept stance.
+            # Never zeroed for stand_only like velocity/gait were, so a stand-only policy was
+            # quietly being paid to splay its legs apart regardless of whether that helped
+            # balance at all (flagged from watching v6: legs flung into a wide front-back
+            # split well past what COM/brace alone would ask for). Zero both out here --
+            # com_reward is the one that should decide how the feet are placed now.
+            stance_total = (info["reward_breakdown"].get("stance", 0.0)
+                             + info["reward_breakdown"].get("contact_stance", 0.0))
+            reward -= stance_total
+            info["reward_breakdown"]["stance"] = 0.0
+            info["reward_breakdown"]["contact_stance"] = 0.0
+
         if self._episode_knee_floor is not None:
             clamped = False
             for qadr, dadr in ((self._knee_r_qpos, self._knee_r_dof), (self._knee_l_qpos, self._knee_l_dof)):
