@@ -26,7 +26,8 @@ LOG_STD_MAX = np.log(0.6)
 
 
 class BreakdownCallback(BaseCallback):
-    KEYS = ["height", "stability", "stance", "knee_avoid", "recovery", "jerk", "velocity", "gait", "brace", "com"]
+    KEYS = ["height", "stability", "stance", "knee_avoid", "recovery", "jerk", "velocity", "gait", "brace", "com",
+            "stand_streak"]
 
     def __init__(self, window=100):
         super().__init__()
