@@ -272,12 +272,12 @@
     <motor name="a_elbow_r" joint="a_elbow_r" gear="30" ctrlrange="-1 1"/>
     <motor name="a_shoulder_l" joint="a_shoulder_l" gear="45" ctrlrange="-1 1"/>
     <motor name="a_elbow_l" joint="a_elbow_l" gear="30" ctrlrange="-1 1"/>
-    <motor name="a_hip_r" joint="a_hip_r" gear="90" ctrlrange="-1 1"/>
+    <motor name="a_hip_r" joint="a_hip_r" gear="180" ctrlrange="-1 1"/>
     <motor name="a_knee_r" joint="a_knee_r" gear="60" ctrlrange="-1 1"/>
-    <motor name="a_ankle_r" joint="a_ankle_r" gear="14" ctrlrange="-1 1"/>
-    <motor name="a_hip_l" joint="a_hip_l" gear="90" ctrlrange="-1 1"/>
+    <motor name="a_ankle_r" joint="a_ankle_r" gear="40" ctrlrange="-1 1"/>
+    <motor name="a_hip_l" joint="a_hip_l" gear="180" ctrlrange="-1 1"/>
     <motor name="a_knee_l" joint="a_knee_l" gear="60" ctrlrange="-1 1"/>
-    <motor name="a_ankle_l" joint="a_ankle_l" gear="14" ctrlrange="-1 1"/>
+    <motor name="a_ankle_l" joint="a_ankle_l" gear="40" ctrlrange="-1 1"/>
     <motor name="b_root_x" joint="b_root_x" gear="90" ctrlrange="-1 1"/>
     <motor name="b_root_ry" joint="b_root_ry" gear="250" ctrlrange="-1 1"/>
     <motor name="b_waist" joint="b_waist" gear="70" ctrlrange="-1 1"/>
@@ -286,11 +286,11 @@
     <motor name="b_elbow_r" joint="b_elbow_r" gear="30" ctrlrange="-1 1"/>
     <motor name="b_shoulder_l" joint="b_shoulder_l" gear="45" ctrlrange="-1 1"/>
     <motor name="b_elbow_l" joint="b_elbow_l" gear="30" ctrlrange="-1 1"/>
-    <motor name="b_hip_r" joint="b_hip_r" gear="90" ctrlrange="-1 1"/>
+    <motor name="b_hip_r" joint="b_hip_r" gear="180" ctrlrange="-1 1"/>
     <motor name="b_knee_r" joint="b_knee_r" gear="60" ctrlrange="-1 1"/>
-    <motor name="b_ankle_r" joint="b_ankle_r" gear="14" ctrlrange="-1 1"/>
-    <motor name="b_hip_l" joint="b_hip_l" gear="90" ctrlrange="-1 1"/>
+    <motor name="b_ankle_r" joint="b_ankle_r" gear="40" ctrlrange="-1 1"/>
+    <motor name="b_hip_l" joint="b_hip_l" gear="180" ctrlrange="-1 1"/>
     <motor name="b_knee_l" joint="b_knee_l" gear="60" ctrlrange="-1 1"/>
-    <motor name="b_ankle_l" joint="b_ankle_l" gear="14" ctrlrange="-1 1"/>
+    <motor name="b_ankle_l" joint="b_ankle_l" gear="40" ctrlrange="-1 1"/>
   </actuator>
 </mujoco>

@@ -140,15 +140,26 @@ ACTUATOR_GEAR = {
     # mode remains -- knees now visibly buckle (bend further) during the ~20 steps before a
     # fall, instead of staying static. Testing whether more leg torque lets the policy actually
     # arrest a stumble instead of getting overpowered by torso weight/combat impacts.
-    "hip_r": 90, "knee_r": 60, "hip_l": 90, "knee_l": 60,
+    # hip raised again 90->180 (stand-only diagnosis, 2026-10-07): a hand-coded capture-point
+    # balance controller (position+velocity feedback on COM-over-feet, no RL) was gear-scanned
+    # to separate "actuator too weak" from "control law wrong" -- scaling hip gear ALONE made
+    # things worse (0-7%), but ankle x3 alone got 3%->10%, and hip x2 + ankle x3 together got
+    # the best result found, 3%->17%. Raised together, not ankle alone, to match that result.
+    "hip_r": 180, "knee_r": 60, "hip_l": 180, "knee_l": 60,
     # ankle: small, fast corrective torque (fore/aft ground-reaction-force shifting), not gross
     # locomotion force. gear=35 (elbow-to-shoulder range) turned out way too strong once given
     # a planted foot's leverage against the ground -- measured the policy slamming ctrl~1.0 on
     # a grounded ankle and literally launching the torso backward at up to 2.4 m/s (docs 10.18).
     # An elbow at the same gear only ever swings a free-hanging forearm; a grounded ankle pushes
     # against the whole body + the earth's reaction mass, so the same gear number is nowhere
-    # near equivalent in effect. Cut to a third to keep it a fine corrective tool, not a launch.
-    "ankle_r": 14, "ankle_l": 14,
+    # near equivalent in effect. Cut to a third (35->14) to keep it a fine corrective tool.
+    # Raised again 14->40 (stand-only diagnosis, 2026-10-07): the human ankle:hip torque ratio
+    # is roughly 1:2, but this body's old 14:90 was ~1:6.4 -- a hand capture-point controller
+    # gear-scan (above) showed ankle strength, not the reward/control law, was the bottleneck
+    # for the ankle-balance-strategy (3%->10-17% survival as ankle gear went up). The old
+    # launch-the-torso failure happened under bang-bang RL exploitation with no smoothness
+    # penalty; this run keeps the jerk-cost reward term specifically to guard against a repeat.
+    "ankle_r": 40, "ankle_l": 40,
 }
 
 ROOT_GEAR = 90
