@@ -191,7 +191,7 @@ class CalmFracCallback(LinearScaffoldCallback):
 
     log_key = "rollout/calm_frac"
 
-    def __init__(self, total_timesteps, start_frac=0.95, end_frac=CALM_EPISODE_FRAC, **kwargs):
+    def __init__(self, total_timesteps, start_frac=1.0, end_frac=CALM_EPISODE_FRAC, **kwargs):
         super().__init__(total_timesteps, start_frac, end_frac, **kwargs)
 
     def apply(self, value):
