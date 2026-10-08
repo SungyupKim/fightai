@@ -341,6 +341,20 @@ class LocomotionEnv(Fighter2DEnv):
             info["reward_breakdown"]["stance"] = 0.0
             info["reward_breakdown"]["contact_stance"] = 0.0
 
+            # same bug, different term (2026-10-08): "recovery" rewards upward torso velocity
+            # gated by max(0, 1 - head_z/STANDING_HEAD_HEIGHT) -- STANDING_HEAD_HEIGHT is a
+            # fully-upright reference (1.29), so that gate stays substantially open (measured
+            # ~0.25 of its max) even in a relaxed stance that comfortably clears FALL_HEIGHT.
+            # Meant to pay for genuinely getting up off the ground, it was quietly also paying
+            # for any small upward bob while already standing -- standing still earns it
+            # nothing, bobbing earns it repeatedly, which likely explains the "tap-dancing"
+            # balance behavior watched on v12. Zero it out once already above FALL_HEIGHT, so
+            # it only ever fires while genuinely down and makes the per-step reward while
+            # standing come entirely from the "stay up" terms (height/stability/com/stand_streak).
+            if self.data.xpos[self.a_torso_id][2] >= FALL_HEIGHT:
+                reward -= info["reward_breakdown"].get("recovery", 0.0)
+                info["reward_breakdown"]["recovery"] = 0.0
+
         if self._episode_knee_floor is not None:
             clamped = False
             for qadr, dadr in ((self._knee_r_qpos, self._knee_r_dof), (self._knee_l_qpos, self._knee_l_dof)):
