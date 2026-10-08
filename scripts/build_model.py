@@ -5,7 +5,13 @@ FIGHTER_TEMPLATE = """
       <joint name="{p}root_x" type="slide" axis="1 0 0" limited="false" damping="0.5"/>
       <joint name="{p}root_z" type="slide" axis="0 0 1" limited="false" damping="0.5"/>
       <joint name="{p}root_ry" type="hinge" axis="0 {ay} 0" limited="false" damping="0.5"/>
-      <geom name="{p}pelvis" type="capsule" fromto="0 0 -0.22 0 0 0" size="0.10" rgba="{color}"/>
+      <!-- density 1440 (default 1000, paired with the leg density cut below): biomechanics audit
+           (2026-10-08) measured the trunk at only 33.6% of total body mass with legs at 47%,
+           vs human proportions of ~50% trunk / ~32% legs (Winter's segment tables) -- the capsule
+           cross-section is too slender to carry a realistic trunk mass at normal tissue density,
+           so density stands in as the free parameter (not a literal material claim, same
+           reasoning already used for head/foot) to hit the target mass share instead. -->
+      <geom name="{p}pelvis" type="capsule" fromto="0 0 -0.22 0 0 0" size="0.10" density="1440" rgba="{color}"/>
 
       <!-- waist: previously the whole torso (pelvis to shoulders) was one rigid capsule, so
            root_ry (hip-level lean, always-on PD balance assist, not RL-controlled) was the
@@ -16,7 +22,7 @@ FIGHTER_TEMPLATE = """
            forward flexion (-20 back, 45 forward) like a real spine. -->
       <body name="{p}chest" pos="0 0 0">
         <joint name="{p}waist" type="hinge" axis="0 {ay} 0" range="-20 45" damping="2" armature="0.02"/>
-        <geom name="{p}chest" type="capsule" fromto="0 0 0 0 0 0.22" size="0.10" rgba="{color}"/>
+        <geom name="{p}chest" type="capsule" fromto="0 0 0 0 0 0.22" size="0.10" density="1440" rgba="{color}"/>
 
         <body name="{p}head" pos="0 0 0.22">
           <joint name="{p}head" type="hinge" axis="0 {ay} 0" range="-40 40" damping="1" armature="0.01"/>
@@ -68,10 +74,15 @@ FIGHTER_TEMPLATE = """
              front-back split" behavior seen in stand-only training, independent of any reward
              tuning (jerk penalty etc.) aimed at the same symptom from the other side. -->
         <joint name="{p}hip_r" type="hinge" axis="0 {ay} 0" range="-20 120" damping="3" armature="0.02"/>
-        <geom name="{p}thigh_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="{color}"/>
+        <!-- density 650 (default 1000, paired with the trunk density raise above): one whole leg
+             (thigh+shin+foot+toe) measured at 23.5% of total body mass vs a human leg's ~16% --
+             legs this heavy have more rotational inertia swinging about the hip than a real leg,
+             working against exactly the fast corrective swing balance needs. foot keeps its own
+             existing density (already tuned for contact behavior, not touched here). -->
+        <geom name="{p}thigh_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" density="650" rgba="{color}"/>
         <body name="{p}shin_r" pos="0 0 -0.42">
           <joint name="{p}knee_r" type="hinge" axis="0 {ay} 0" range="-140 0" damping="3" armature="0.02"/>
-          <geom name="{p}shin_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="{color}"/>
+          <geom name="{p}shin_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" density="650" rgba="{color}"/>
           <!-- ankle: previously the foot was a geom rigidly welded to the shin, so a real
                human's main tool for correcting fore/aft sway (shifting ground-reaction-force
                under the foot via ankle torque) didn't exist -- the policy could only react to
@@ -108,7 +119,7 @@ FIGHTER_TEMPLATE = """
                  real foot. -->
             <body name="{p}toe_r" pos="{toe_x} 0 0">
               <joint name="{p}toe_r" type="hinge" axis="0 {ay} 0" range="-10 45" stiffness="8" damping="0.5" armature="0.01"/>
-              <geom name="{p}toe_r" type="capsule" fromto="0 0 0 {toe_tip_x} 0 0" size="0.045" rgba="{color}"/>
+              <geom name="{p}toe_r" type="capsule" fromto="0 0 0 {toe_tip_x} 0 0" size="0.045" density="650" rgba="{color}"/>
             </body>
           </body>
         </body>
@@ -116,10 +127,10 @@ FIGHTER_TEMPLATE = """
 
       <body name="{p}thigh_l" pos="0 0.09 -0.22">
         <joint name="{p}hip_l" type="hinge" axis="0 {ay} 0" range="-20 120" damping="3" armature="0.02"/>
-        <geom name="{p}thigh_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="{color}"/>
+        <geom name="{p}thigh_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" density="650" rgba="{color}"/>
         <body name="{p}shin_l" pos="0 0 -0.42">
           <joint name="{p}knee_l" type="hinge" axis="0 {ay} 0" range="-140 0" damping="3" armature="0.02"/>
-          <geom name="{p}shin_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" rgba="{color}"/>
+          <geom name="{p}shin_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.055" density="650" rgba="{color}"/>
           <body name="{p}foot_l" pos="0 0 -0.42">
             <joint name="{p}ankle_l" type="hinge" axis="0 {ay} 0" range="-30 30" damping="1.5" armature="0.02"/>
             <!-- density 400 (default 1000): foot ~1.6 kg instead of ~4 kg, closer to human foot mass share -->
@@ -127,7 +138,7 @@ FIGHTER_TEMPLATE = """
             <site name="{p}foot_l" pos="0 0 0" size="0.02"/>
             <body name="{p}toe_l" pos="{toe_x} 0 0">
               <joint name="{p}toe_l" type="hinge" axis="0 {ay} 0" range="-10 45" stiffness="8" damping="0.5" armature="0.01"/>
-              <geom name="{p}toe_l" type="capsule" fromto="0 0 0 {toe_tip_x} 0 0" size="0.045" rgba="{color}"/>
+              <geom name="{p}toe_l" type="capsule" fromto="0 0 0 {toe_tip_x} 0 0" size="0.045" density="650" rgba="{color}"/>
             </body>
           </body>
         </body>
