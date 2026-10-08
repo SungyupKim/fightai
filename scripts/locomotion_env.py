@@ -213,8 +213,17 @@ class LocomotionEnv(Fighter2DEnv):
 
         self._a_bodies = [i for i in range(self.model.nbody) if self.model.body(i).name.startswith("a_")]
         self._a_masses = np.array([self.model.body_mass[i] for i in self._a_bodies])
+        self._prev_com_x = None
         base_dim = self.observation_space.shape[0]
-        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(base_dim + 1,), dtype=np.float32)
+        # +1 for target_vx, +3 for stand-only balance features (com_rel_x, com_rel_z, com_vel_x --
+        # see _obs()). The base observation is just raw joint qpos/qvel, so a stand-only policy
+        # has to learn forward kinematics from scratch to even know where its own centre of mass
+        # sits relative to its feet -- exactly the thing a hand-coded capture-point controller gets
+        # for free by computing it directly (stand-only diagnosis, 2026-10-09: RL plateaued well
+        # below even that simple hand controller's ~15-17% survival for 23M+ steps straight,
+        # despite reward fixes that should have helped -- handing it the same computed signal
+        # the hand controller used is a different kind of lever than reward shaping).
+        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(base_dim + 4,), dtype=np.float32)
 
     def set_min_knee_deg(self, deg):
         """deg=None disables the clamp entirely. Called externally (KneeScaffoldCallback)
@@ -228,7 +237,18 @@ class LocomotionEnv(Fighter2DEnv):
         self._assist_scale = scale
 
     def _obs(self):
-        return np.concatenate([super()._obs(), [self._target_vx]]).astype(np.float32)
+        com_x = np.sum(self._a_masses * self.data.xipos[self._a_bodies, 0]) / self._a_masses.sum()
+        com_z = np.sum(self._a_masses * self.data.xipos[self._a_bodies, 2]) / self._a_masses.sum()
+        feet_x = [self.data.site_xpos[s][0] for s in self.a_feet]
+        feet_z = [self.data.site_xpos[s][2] for s in self.a_feet]
+        com_rel_x = com_x - float(np.mean(feet_x))   # horizontal COM offset from foot centre
+        com_rel_z = com_z - float(min(feet_z))        # COM height above the lower foot
+        # finite-difference COM velocity (matches the hand capture-point controller's own
+        # approach) -- 0.0 on the very first observation of an episode, same as that controller.
+        com_vel_x = 0.0 if self._prev_com_x is None else (com_x - self._prev_com_x) / 0.02
+        self._prev_com_x = com_x
+        extra = np.array([com_rel_x, com_rel_z, com_vel_x], dtype=np.float32)
+        return np.concatenate([super()._obs(), [self._target_vx], extra]).astype(np.float32)
 
     def _resample_target_vx(self):
         self._target_vx = float(self.np_random.uniform(-TARGET_VX_RANGE, TARGET_VX_RANGE))
@@ -282,6 +302,7 @@ class LocomotionEnv(Fighter2DEnv):
         self._episode_knee_floor = self._min_knee_deg if is_calm else None
         self._is_calm = is_calm
         self._stand_streak = 0
+        self._prev_com_x = None
         mujoco.mj_forward(self.model, self.data)
 
         saved_ctrl = self.data.ctrl.copy()
