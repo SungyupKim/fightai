@@ -15,7 +15,7 @@ from stable_baselines3.common.callbacks import BaseCallback, CallbackList, Check
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
-from locomotion_env import LocomotionEnv
+from locomotion_env import CALM_EPISODE_FRAC, LocomotionEnv
 
 MODELS_DIR = pathlib.Path(__file__).resolve().parent.parent / "checkpoints"
 
@@ -179,6 +179,25 @@ class VelocityAssistCallback(LinearScaffoldCallback):
         self.training_env.env_method("set_assist_scale", value)
 
 
+class CalmFracCallback(LinearScaffoldCallback):
+    """Anneals LocomotionEnv's fraction of calm (near-standing) vs. harsh (random collapse)
+    episode starts (docs 2026-10-09 stand-only curriculum discussion) from a high `start_frac`
+    (mostly/all calm -- learn to just hold a stand first) down to the original combat-tuned
+    CALM_EPISODE_FRAC (0.45), introducing harsh/collapse starts progressively instead of the
+    full mixed distribution from step 0. "Stand still and hold it" and "get up off the ground"
+    are different skills (the latter still has its own dedicated `recovery` reward term) --
+    this doesn't claim the second is free once the first works, just that learning it staged
+    may be easier than both at once from scratch."""
+
+    log_key = "rollout/calm_frac"
+
+    def __init__(self, total_timesteps, start_frac=0.95, end_frac=CALM_EPISODE_FRAC, **kwargs):
+        super().__init__(total_timesteps, start_frac, end_frac, **kwargs)
+
+    def apply(self, value):
+        self.training_env.env_method("set_calm_frac", value)
+
+
 class FallRateCallback(BaseCallback):
     """Fraction of completed episodes that ended via a_out (failed to recover within
     DOWN_RECOVERY_STEPS) rather than truncation at MAX_STEPS -- the direct metric this
@@ -216,6 +235,9 @@ def main():
                          help="zero the velocity and gait rewards -- learn standing from any posture alone")
     parser.add_argument("--assist-already-relaxed", action="store_true",
                          help="same as --knee-already-relaxed, for the velocity assist scaffold")
+    parser.add_argument("--calm-already-relaxed", action="store_true",
+                         help="same as --knee-already-relaxed, for the stand-only calm-episode-"
+                              "fraction curriculum (only meaningful with --stand-only)")
     args = parser.parse_args()
 
     MODELS_DIR.mkdir(exist_ok=True)
@@ -243,10 +265,15 @@ def main():
         save_path=str(ckpt_dir),
         name_prefix=run_name,
     )
-    callbacks = CallbackList([checkpoint_callback, BreakdownCallback(), FallRateCallback(),
-                               LogStdClampCallback(),
-                               KneeScaffoldCallback(args.timesteps, already_relaxed=args.knee_already_relaxed),
-                               VelocityAssistCallback(args.timesteps, already_relaxed=args.assist_already_relaxed)])
+    callback_list = [checkpoint_callback, BreakdownCallback(), FallRateCallback(),
+                      LogStdClampCallback(),
+                      KneeScaffoldCallback(args.timesteps, already_relaxed=args.knee_already_relaxed),
+                      VelocityAssistCallback(args.timesteps, already_relaxed=args.assist_already_relaxed)]
+    if args.stand_only:
+        callback_list.append(
+            CalmFracCallback(args.timesteps, relax_frac=0.4,
+                              already_relaxed=args.calm_already_relaxed))
+    callbacks = CallbackList(callback_list)
 
     try:
         model.learn(total_timesteps=args.timesteps, callback=callbacks,

@@ -210,6 +210,13 @@ class LocomotionEnv(Fighter2DEnv):
         # you find your own coordination, not doing the walking for you. 0.0 = no-op default.
         self._assist_scale = 0.0
         self._stand_streak = 0
+        # curriculum stage (2026-10-09): CALM_EPISODE_FRAC was tuned for the combat league
+        # (practice recovering mid-fight), never re-examined for stand-only's much narrower
+        # goal -- "stand still and hold it" and "get up off the ground" are different skills,
+        # and asking for both from the first step may be a harder problem than sequencing them.
+        # Instance attribute (not the bare module constant) so set_calm_frac() can anneal it
+        # per-run via env_method, same pattern as the knee floor / velocity assist scaffolds.
+        self._calm_frac = CALM_EPISODE_FRAC
 
         self._a_bodies = [i for i in range(self.model.nbody) if self.model.body(i).name.startswith("a_")]
         self._a_masses = np.array([self.model.body_mass[i] for i in self._a_bodies])
@@ -235,6 +242,12 @@ class LocomotionEnv(Fighter2DEnv):
         """Called externally (VelocityAssistCallback) to anneal the external push-toward-
         target-velocity force. 0.0 disables it entirely."""
         self._assist_scale = scale
+
+    def set_calm_frac(self, frac):
+        """Called externally (CalmFracCallback) to anneal the fraction of episodes that start
+        calm (near-standing) vs. harsh (random collapse). Same env_method broadcast pattern as
+        set_min_knee_deg/set_assist_scale."""
+        self._calm_frac = frac
 
     def _obs(self):
         com_x = np.sum(self._a_masses * self.data.xipos[self._a_bodies, 0]) / self._a_masses.sum()
@@ -294,7 +307,7 @@ class LocomotionEnv(Fighter2DEnv):
         # fine" by making most episodes calm (low severity, no push) and only a minority
         # keep the full hard curriculum -- closer to how a real fighter is only crouched
         # defensively some of the time, not permanently braced.
-        is_calm = self.np_random.random() < CALM_EPISODE_FRAC
+        is_calm = self.np_random.random() < self._calm_frac
         severity = self._randomize_a_state(0.0 if is_calm else HARSH_SEVERITY_LO,
                                             CALM_SEVERITY_HI if is_calm else 1.0)
         # only calm episodes get the knee floor -- harsh/collapse episodes need the full
