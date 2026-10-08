@@ -56,7 +56,18 @@ FIGHTER_TEMPLATE = """
              stronger torque with unchanged damping likely made motion twitchier/harder to
              control rather than more stable. Scaling damping by the same 1.5x tests whether
              that's actually the cause. -->
-        <joint name="{p}hip_r" type="hinge" axis="0 {ay} 0" range="-105 105" damping="3" armature="0.02"/>
+        <!-- range changed from symmetric -105/105 to -20/120 (stand-only biomechanics audit,
+             2026-10-08): every other joint sharing this axis convention (waist, shoulder, ankle)
+             already got an anatomically asymmetric range with a comment explaining why -- this
+             one was missed. A real hip flexes (thigh toward chest) up to ~120 deg but extends
+             (thigh swinging behind the body) only ~10-20 deg past neutral, nowhere near
+             symmetric; measured (mj_forward at fixed qpos) that positive = flexion (forward,
+             toward this fighter's own facing direction) here, matching the sign convention
+             make_fighter already establishes for the knee. The old symmetric range let a leg
+             swing 105 deg behind the body -- a real contributor to the "legs flung into a wide
+             front-back split" behavior seen in stand-only training, independent of any reward
+             tuning (jerk penalty etc.) aimed at the same symptom from the other side. -->
+        <joint name="{p}hip_r" type="hinge" axis="0 {ay} 0" range="-20 120" damping="3" armature="0.02"/>
         <geom name="{p}thigh_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="{color}"/>
         <body name="{p}shin_r" pos="0 0 -0.42">
           <joint name="{p}knee_r" type="hinge" axis="0 {ay} 0" range="-140 0" damping="3" armature="0.02"/>
@@ -104,7 +115,7 @@ FIGHTER_TEMPLATE = """
       </body>
 
       <body name="{p}thigh_l" pos="0 0.09 -0.22">
-        <joint name="{p}hip_l" type="hinge" axis="0 {ay} 0" range="-105 105" damping="3" armature="0.02"/>
+        <joint name="{p}hip_l" type="hinge" axis="0 {ay} 0" range="-20 120" damping="3" armature="0.02"/>
         <geom name="{p}thigh_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="{color}"/>
         <body name="{p}shin_l" pos="0 0 -0.42">
           <joint name="{p}knee_l" type="hinge" axis="0 {ay} 0" range="-140 0" damping="3" armature="0.02"/>

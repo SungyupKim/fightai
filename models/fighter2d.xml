@@ -72,7 +72,18 @@
              stronger torque with unchanged damping likely made motion twitchier/harder to
              control rather than more stable. Scaling damping by the same 1.5x tests whether
              that's actually the cause. -->
-        <joint name="a_hip_r" type="hinge" axis="0 -1 0" range="-105 105" damping="3" armature="0.02"/>
+        <!-- range changed from symmetric -105/105 to -20/120 (stand-only biomechanics audit,
+             2026-10-08): every other joint sharing this axis convention (waist, shoulder, ankle)
+             already got an anatomically asymmetric range with a comment explaining why -- this
+             one was missed. A real hip flexes (thigh toward chest) up to ~120 deg but extends
+             (thigh swinging behind the body) only ~10-20 deg past neutral, nowhere near
+             symmetric; measured (mj_forward at fixed qpos) that positive = flexion (forward,
+             toward this fighter's own facing direction) here, matching the sign convention
+             make_fighter already establishes for the knee. The old symmetric range let a leg
+             swing 105 deg behind the body -- a real contributor to the "legs flung into a wide
+             front-back split" behavior seen in stand-only training, independent of any reward
+             tuning (jerk penalty etc.) aimed at the same symptom from the other side. -->
+        <joint name="a_hip_r" type="hinge" axis="0 -1 0" range="-20 120" damping="3" armature="0.02"/>
         <geom name="a_thigh_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="0.85 0.2 0.2 1"/>
         <body name="a_shin_r" pos="0 0 -0.42">
           <joint name="a_knee_r" type="hinge" axis="0 -1 0" range="-140 0" damping="3" armature="0.02"/>
@@ -120,7 +131,7 @@
       </body>
 
       <body name="a_thigh_l" pos="0 0.09 -0.22">
-        <joint name="a_hip_l" type="hinge" axis="0 -1 0" range="-105 105" damping="3" armature="0.02"/>
+        <joint name="a_hip_l" type="hinge" axis="0 -1 0" range="-20 120" damping="3" armature="0.02"/>
         <geom name="a_thigh_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="0.85 0.2 0.2 1"/>
         <body name="a_shin_l" pos="0 0 -0.42">
           <joint name="a_knee_l" type="hinge" axis="0 -1 0" range="-140 0" damping="3" armature="0.02"/>
@@ -194,7 +205,18 @@
              stronger torque with unchanged damping likely made motion twitchier/harder to
              control rather than more stable. Scaling damping by the same 1.5x tests whether
              that's actually the cause. -->
-        <joint name="b_hip_r" type="hinge" axis="0 1 0" range="-105 105" damping="3" armature="0.02"/>
+        <!-- range changed from symmetric -105/105 to -20/120 (stand-only biomechanics audit,
+             2026-10-08): every other joint sharing this axis convention (waist, shoulder, ankle)
+             already got an anatomically asymmetric range with a comment explaining why -- this
+             one was missed. A real hip flexes (thigh toward chest) up to ~120 deg but extends
+             (thigh swinging behind the body) only ~10-20 deg past neutral, nowhere near
+             symmetric; measured (mj_forward at fixed qpos) that positive = flexion (forward,
+             toward this fighter's own facing direction) here, matching the sign convention
+             make_fighter already establishes for the knee. The old symmetric range let a leg
+             swing 105 deg behind the body -- a real contributor to the "legs flung into a wide
+             front-back split" behavior seen in stand-only training, independent of any reward
+             tuning (jerk penalty etc.) aimed at the same symptom from the other side. -->
+        <joint name="b_hip_r" type="hinge" axis="0 1 0" range="-20 120" damping="3" armature="0.02"/>
         <geom name="b_thigh_r" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="0.2 0.4 0.85 1"/>
         <body name="b_shin_r" pos="0 0 -0.42">
           <joint name="b_knee_r" type="hinge" axis="0 1 0" range="-140 0" damping="3" armature="0.02"/>
@@ -242,7 +264,7 @@
       </body>
 
       <body name="b_thigh_l" pos="0 0.09 -0.22">
-        <joint name="b_hip_l" type="hinge" axis="0 1 0" range="-105 105" damping="3" armature="0.02"/>
+        <joint name="b_hip_l" type="hinge" axis="0 1 0" range="-20 120" damping="3" armature="0.02"/>
         <geom name="b_thigh_l" type="capsule" fromto="0 0 0 0 0 -0.42" size="0.07" rgba="0.2 0.4 0.85 1"/>
         <body name="b_shin_l" pos="0 0 -0.42">
           <joint name="b_knee_l" type="hinge" axis="0 1 0" range="-140 0" damping="3" armature="0.02"/>
