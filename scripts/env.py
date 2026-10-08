@@ -216,7 +216,14 @@ HEAD_HEIGHT_RATIO_CAP = 1.0
 # gets ~0 (only penalizes downward speed, not upward/jumping motion). Always >= 0, same
 # cliff-free shape as height reward. Scale kept modest like before (per-episode magnitude checked
 # against strike before training -- see docs 9.8/10.3 for why that matters).
-STABILITY_REWARD_SCALE = 0.15
+STABILITY_REWARD_SCALE = 0.15  # combat value, calibrated against combat's strike reward
+                                # magnitude (docs 9.8/10.3), not stand-only's height(3.0)/
+                                # stand_streak(3.0) -- locomotion_env.py overrides this module
+                                # global to a much bigger value for stand_only (same pattern as
+                                # BALANCE_KP/KD), since at 0.15 even p90 "normal" downward
+                                # bobbing (~0.26 m/s, measured above) only costs ~0.07 of the
+                                # 0.15 max -- too small to discourage the "tap-dancing"
+                                # oscillation seen in stand-only training.
 Z_VEL_REF = 1.0
 
 # The z-velocity stability bonus above didn't move the needle on fall rate over a full 100-round

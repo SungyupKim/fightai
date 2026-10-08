@@ -172,6 +172,10 @@ class LocomotionEnv(Fighter2DEnv):
             # removed, the stand-only policy never kept its footing in an episode)
             env_module.BALANCE_KP = 0.0
             env_module.BALANCE_KD = 0.0
+            # 0.15 (env.py default) was calibrated against combat's strike reward, not against
+            # stand-only's height/stand_streak (both scale 3.0) -- too weak to meaningfully
+            # discourage the "tap-dancing" vertical bobbing seen in stand-only training (2026-10-08).
+            env_module.STABILITY_REWARD_SCALE = 1.0
         super().__init__(render_mode=render_mode, opponent_policy_path=None, getup_curriculum_prob=0.0)
         self._b_root_x_qpos = self.model.joint("b_root_x").qposadr[0]
         self._b_root_x_dof = self.model.joint("b_root_x").dofadr[0]
