@@ -104,24 +104,30 @@ EFFORT_COST = 0.01             # back to the original value. Raised in steps (0.
                                 # showed it was ~-250/episode, over 75% of total reward and dwarfing the
                                 # +5/episode strike signal. It never worked and was drowning out the
                                 # actual combat signal, so reverting rather than tuning it further.
-JERK_PENALTY_SCALE = 0.01      # cost on action change frame-to-frame, discourages full-power reversals.
-                                # 0.02->0.01: measured a big jump in "frozen pose" steps after adding
-                                # this (5.2%->14.4% of steps, longest freeze ~15s) -- "stay still" costs
-                                # exactly 0 regardless of scale, so a smaller scale narrows the gap
-                                # between that and "make a small useful movement" without changing the
-                                # RELATIVE cost of a big reversal vs a small adjustment (it's squared, so
-                                # a launch-sized delta stays proportionally far more expensive either way).
-                                # (e.g. root thrust +1 -> -1 in one step)
-                                # Tried 0.01->0.005 (docs 10.31/10.32) on the theory that jerk penalty was
-                                # making the corrective action needed to arrest a "clean" (non-stagger)
-                                # fall too expensive right when it's needed most. Measured over 6 league
-                                # rounds: fall rate got WORSE, not better (33%/33%/50%/40%/63.3% across
-                                # rounds 2-6, vs a 34.4% baseline average from rounds 19-21 at 0.01) --
-                                # trend was monotonically bad, including after P2 got its first round
-                                # under the new value, so this wasn't just noise. Reverted to 0.01 and
-                                # rolled the league back to the pre-experiment checkpoints. The "clean
-                                # fall" mechanism documented in 10.31 is still real and still unexplained
-                                # -- jerk penalty just isn't the lever that fixes it.
+JERK_PENALTY_SCALE = 0.03      # cost on action change frame-to-frame, discourages full-power reversals.
+                                # 0.02->0.01 (combat league, old note): measured a big jump in "frozen
+                                # pose" steps after RAISING this to 0.02 (5.2%->14.4% of steps, longest
+                                # freeze ~15s) -- "stay still" costs exactly 0 regardless of scale, so a
+                                # smaller scale narrows the gap between that and "make a small useful
+                                # movement" without changing the RELATIVE cost of a big reversal vs a
+                                # small adjustment (it's squared, so a launch-sized delta stays
+                                # proportionally far more expensive either way). Tried 0.01->0.005 too
+                                # (docs 10.31/10.32): fall rate got WORSE over 6 league rounds, reverted.
+                                # Conclusion at the time: "jerk penalty just isn't the lever" for combat's
+                                # clean-fall problem.
+                                # Raised again 0.01->0.03 (stand-only diagnosis, 2026-10-08): different
+                                # problem this time -- std kept climbing back up late in stand-only
+                                # training (v7, v9) instead of settling, i.e. PPO's own gradient favored a
+                                # noisier policy. Likely because calm/careful control barely works at all
+                                # on this body (best hand-tuned controller: 17%), so a wild, high-variance
+                                # policy that occasionally flings the torso above the stand line in expectation
+                                # out-scores a timid one that reliably scores near zero -- visible as
+                                # constant flailing even at 70M+ steps. This is the opposite failure mode
+                                # from the old "frozen pose" one above, so the same lever might cut the
+                                # other way here; watch the next checkpoint for the frozen-pose regression
+                                # specifically (stand_only episodes that start collapsed NEED a big motion
+                                # to ever get up, so a too-strong penalty could make giving up cheaper than
+                                # trying) before raising this further.
 ENGAGE_PENALTY_SCALE = 0.5     # cost on log1p(foot distance) every step -- always some gradient to
                                 # close in (no free zone), steepest near contact range and flattening
                                 # out at long range. Was 0.3 -> 5.0 -> 2.0, tuning this scale alone kept
