@@ -37,6 +37,7 @@ FIELDS = {
     "r_com": "무게중심 보상(참고용)",
     "r_brace": "다리 펴기 보상(참고용)",
     "r_stand_streak": "연속 서기 보상(참고용)",
+    "max_stand_streak_steps": "최대 연속 유지 스텝(2단계 전환 기준: 500)",
     "std": "행동 흔들림(std)",
 }
 LINE_RE = re.compile(r"\|\s*([\w/]+)\s*\|\s*([-+\d.eE]+)\s*\|")
@@ -74,18 +75,9 @@ def latest_checkpoint(ckpt_glob):
     return max(files, key=os.path.getmtime) if files else None
 
 
-def gate_survival_rate(ckpt_path):
-    """Real measurement: fixed seeds 0..GATE_N-1, deterministic actions, does the torso stay
-    above FALL_HEIGHT for a full 3 seconds. Loaded on CPU so it doesn't fight the training run
-    for the GPU."""
-    from stable_baselines3 import PPO
-
-    from env import FALL_HEIGHT
-    from locomotion_env import LocomotionEnv
-
-    model = PPO.load(ckpt_path, device="cpu")
-    env = LocomotionEnv(stand_only=True)
+def _run_gate(env, model):
     ok = 0
+    from env import FALL_HEIGHT
     for seed in range(GATE_N):
         obs, _ = env.reset(seed=seed)
         fell = False
@@ -102,7 +94,36 @@ def gate_survival_rate(ckpt_path):
     return ok / GATE_N
 
 
-def format_message(v, total, gate_rate, gate_ckpt):
+def gate_survival_rate(ckpt_path):
+    """Real measurement: fixed seeds 0..GATE_N-1, deterministic actions, does the torso stay
+    above FALL_HEIGHT for a full 3 seconds -- on the env's DEFAULT calm/harsh mix. Loaded on
+    CPU so it doesn't fight the training run for the GPU."""
+    from stable_baselines3 import PPO
+
+    from locomotion_env import LocomotionEnv
+
+    model = PPO.load(ckpt_path, device="cpu")
+    env = LocomotionEnv(stand_only=True)
+    return _run_gate(env, model)
+
+
+def gate_survival_rate_calm_only(ckpt_path):
+    """Same gate, but every reset is forced calm (near-standing, severity 0..0.3, no push) --
+    matches phase 1 of the curriculum (CurriculumGateCallback, train_locomotion.py). The
+    default gate_survival_rate() always mixes in harsh/collapse starts, so during phase 1 it
+    stays near 0% regardless of how well phase 1 is actually going (harsh starts dominate the
+    failures) -- this one isolates the thing phase 1 is actually being measured on."""
+    from stable_baselines3 import PPO
+
+    from locomotion_env import LocomotionEnv
+
+    model = PPO.load(ckpt_path, device="cpu")
+    env = LocomotionEnv(stand_only=True)
+    env.set_calm_frac(1.0)
+    return _run_gate(env, model)
+
+
+def format_message(v, total, gate_rate, gate_ckpt, calm_gate_rate):
     steps = v.get("total_timesteps", 0)
     pct = 100 * steps / total if total else 0
     calm_frac = v.get("calm_frac")
@@ -125,7 +146,8 @@ def format_message(v, total, gate_rate, gate_ckpt):
     if gate_rate is None:
         lines.append("실제 3초 생존율: 아직 체크포인트 없음")
     else:
-        lines.append(f"실제 3초 생존율 (고정 시드 {GATE_N}개, 결정적 행동): {gate_rate:.0%}")
+        lines.append(f"실제 3초 생존율 (전체 분포, 고정 시드 {GATE_N}개): {gate_rate:.0%}")
+        lines.append(f"실제 3초 생존율 (calm만, 1단계 기준): {calm_gate_rate:.0%}")
         lines.append(f"  기준 체크포인트: {os.path.basename(gate_ckpt)}")
     lines.append("")
     lines.append("-- 아래는 학습 로그 수치, 왜곡될 수 있어 참고만 --")
@@ -134,6 +156,7 @@ def format_message(v, total, gate_rate, gate_ckpt):
     lines.append(f"{FIELDS['r_com']}: {v.get('r_com', float('nan')):.1f}")
     lines.append(f"{FIELDS['r_brace']}: {v.get('r_brace', float('nan')):.1f}")
     lines.append(f"{FIELDS['r_stand_streak']}: {v.get('r_stand_streak', float('nan')):.1f}")
+    lines.append(f"{FIELDS['max_stand_streak_steps']}: {v.get('max_stand_streak_steps', float('nan')):.0f}")
     lines.append(f"{FIELDS['std']}: {v.get('std', float('nan')):.3f}")
     return "\n".join(lines)
 
@@ -157,14 +180,17 @@ def main():
                 last_steps = v.get("total_timesteps")
                 ckpt = latest_checkpoint(args.ckpt_glob)
                 gate_rate = gate_survival_rate(ckpt) if ckpt else None
-                send_message(format_message(v, args.total_timesteps, gate_rate, ckpt))
+                calm_gate_rate = gate_survival_rate_calm_only(ckpt) if ckpt else None
+                send_message(format_message(v, args.total_timesteps, gate_rate, ckpt, calm_gate_rate))
                 print(f"[stand-notify] sent at {last_steps:.0f} steps "
-                      f"(gate={gate_rate if gate_rate is not None else 'n/a'})", flush=True)
+                      f"(gate={gate_rate if gate_rate is not None else 'n/a'}, "
+                      f"calm_gate={calm_gate_rate if calm_gate_rate is not None else 'n/a'})", flush=True)
             if finished(log_path):
                 if v:
                     ckpt = latest_checkpoint(args.ckpt_glob)
                     gate_rate = gate_survival_rate(ckpt) if ckpt else None
-                    send_message(format_message(v, args.total_timesteps, gate_rate, ckpt)
+                    calm_gate_rate = gate_survival_rate_calm_only(ckpt) if ckpt else None
+                    send_message(format_message(v, args.total_timesteps, gate_rate, ckpt, calm_gate_rate)
                                  + "\n\n학습 완료 (모델 저장됨)")
                 print("[stand-notify] finished", flush=True)
                 return
