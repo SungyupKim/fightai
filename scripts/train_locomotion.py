@@ -179,23 +179,71 @@ class VelocityAssistCallback(LinearScaffoldCallback):
         self.training_env.env_method("set_assist_scale", value)
 
 
-class CalmFracCallback(LinearScaffoldCallback):
-    """Anneals LocomotionEnv's fraction of calm (near-standing) vs. harsh (random collapse)
-    episode starts (docs 2026-10-09 stand-only curriculum discussion) from a high `start_frac`
-    (mostly/all calm -- learn to just hold a stand first) down to the original combat-tuned
-    CALM_EPISODE_FRAC (0.45), introducing harsh/collapse starts progressively instead of the
-    full mixed distribution from step 0. "Stand still and hold it" and "get up off the ground"
-    are different skills (the latter still has its own dedicated `recovery` reward term) --
-    this doesn't claim the second is free once the first works, just that learning it staged
-    may be easier than both at once from scratch."""
+class CurriculumGateCallback(LinearScaffoldCallback):
+    """Advances LocomotionEnv's calm/harsh episode-start curriculum (docs 2026-10-09) from
+    phase 1 (100% calm -- just learn to hold a stand) to phase 2 (the original combat-tuned
+    CALM_EPISODE_FRAC mix, harsh/collapse starts included) only once phase 1 actually looks
+    solved, instead of on a fixed timer. A fixed timer can't tell whether phase 1 finished
+    early (wasting steps waiting) or is still unsolved when the deadline hits (forcing harsh
+    starts onto a policy that hasn't nailed the easy case yet) -- gating on real performance
+    avoids both. Trigger: the training-log fall_rate drops to <= FALL_RATE_GATE AND the mean
+    longest continuous stand per episode reaches >= STREAK_GATE_STEPS (10s), both sustained
+    over `window` consecutive episodes. Once triggered, phase 2 is still phased in gradually
+    (the usual LinearScaffoldCallback anneal, starting from the trigger point) rather than
+    switched on instantly, to soften the transition.
+
+    "Stand still and hold it" and "get up off the ground" are different skills (the latter
+    still has its own dedicated `recovery` reward term) -- this doesn't claim the second is
+    free once the first works, just that learning it staged may be easier than both at once."""
 
     log_key = "rollout/calm_frac"
+    FALL_RATE_GATE = 0.1
+    STREAK_GATE_STEPS = 500  # 10s at 0.02s/step
 
-    def __init__(self, total_timesteps, start_frac=1.0, end_frac=CALM_EPISODE_FRAC, **kwargs):
-        super().__init__(total_timesteps, start_frac, end_frac, **kwargs)
+    def __init__(self, total_timesteps, end_frac=CALM_EPISODE_FRAC, window=200,
+                 post_trigger_relax_frac=0.15, **kwargs):
+        super().__init__(total_timesteps, 1.0, end_frac, relax_frac=post_trigger_relax_frac, **kwargs)
+        self._fall_recent = deque(maxlen=window)
+        self._streak_recent = deque(maxlen=window)
+        self._streak_running = None
+        self._triggered = False
 
     def apply(self, value):
         self.training_env.env_method("set_calm_frac", value)
+
+    def _on_training_start(self):
+        super()._on_training_start()
+        self._streak_running = np.zeros(self.training_env.num_envs)
+        if self.already_relaxed:
+            self._triggered = True  # continuation of a run whose phase-1 gate already passed
+
+    def _on_step(self):
+        for i, info in enumerate(self.locals["infos"]):
+            self._streak_running[i] = max(self._streak_running[i], info.get("stand_streak_steps", 0))
+            if self.locals["dones"][i]:
+                self._fall_recent.append(1.0 if info.get("a_out") else 0.0)
+                self._streak_recent.append(self._streak_running[i])
+                self._streak_running[i] = 0.0
+        if self._streak_recent:
+            self.logger.record("rollout/max_stand_streak_steps", float(np.mean(self._streak_recent)))
+
+        if not self._triggered and len(self._fall_recent) >= self._fall_recent.maxlen:
+            if (np.mean(self._fall_recent) <= self.FALL_RATE_GATE
+                    and np.mean(self._streak_recent) >= self.STREAK_GATE_STEPS):
+                self._triggered = True
+                self._start_step = self.num_timesteps  # the anneal's own clock starts now
+                print(f"[curriculum] phase-1 gate passed at step {self.num_timesteps} "
+                      f"(fall_rate={np.mean(self._fall_recent):.3f}, "
+                      f"streak={np.mean(self._streak_recent):.0f}) -- starting phase-2 anneal",
+                      flush=True)
+
+        if self._triggered:
+            return super()._on_step()
+        if self.num_timesteps - self._last_set_step >= self.freq:
+            self.apply(self.start_val)
+            self.logger.record(self.log_key, self.start_val)
+            self._last_set_step = self.num_timesteps
+        return True
 
 
 class FallRateCallback(BaseCallback):
@@ -271,8 +319,7 @@ def main():
                       VelocityAssistCallback(args.timesteps, already_relaxed=args.assist_already_relaxed)]
     if args.stand_only:
         callback_list.append(
-            CalmFracCallback(args.timesteps, relax_frac=0.4,
-                              already_relaxed=args.calm_already_relaxed))
+            CurriculumGateCallback(args.timesteps, already_relaxed=args.calm_already_relaxed))
     callbacks = CallbackList(callback_list)
 
     try:

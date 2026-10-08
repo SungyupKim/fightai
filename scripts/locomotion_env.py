@@ -436,6 +436,8 @@ class LocomotionEnv(Fighter2DEnv):
             else:
                 self._stand_streak = 0
             stand_streak_reward = STAND_STREAK_SCALE * min(1.0, self._stand_streak / STAND_STREAK_REF)
+            info["stand_streak_steps"] = self._stand_streak  # raw step count, uncapped -- for
+                                                              # curriculum gating (CurriculumGateCallback)
         reward = reward + velocity_reward + gait_reward + brace_reward + com_reward + stand_streak_reward
         info["reward_breakdown"]["velocity"] = velocity_reward
         info["reward_breakdown"]["gait"] = gait_reward
