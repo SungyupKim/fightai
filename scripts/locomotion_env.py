@@ -149,6 +149,14 @@ BRACE_VZ_REF = 1.0             # m/s downward torso speed at which the fall gate
 # This term pays for knee straightness directly, regardless of velocity or current height, so
 # that equilibrium stops being free -- reuses the same knee_straight ratio brace already
 # computes, just without the fall_gate multiplier.
+#
+# TODO (flagged 2026-10-09, before building the walking curriculum): this is a stand-only-
+# phase-0 scaffold, not a permanent preference -- real walking needs the knee to cycle through
+# flexion every step, and an always-on reward for straightness would fight that normal gait
+# motion once velocity/gait rewards come back. Scale is modest (1.0, vs height/stand_streak's
+# 3.0) so it shouldn't cripple a brief bend during 0-b's recovery-from-collapse either, but it
+# should be annealed down toward 0 (same LinearScaffoldCallback machinery as the knee floor /
+# velocity assist) specifically before reward weights are set up for walking -- don't forget.
 KNEE_STRAIGHT_SCALE = 1.0
 
 # ---- centre-of-mass over support (stand-only, docs 10.5x) ----
