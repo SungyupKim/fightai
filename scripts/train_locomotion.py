@@ -314,6 +314,13 @@ def main():
     parser.add_argument("--height-already-relaxed", action="store_true",
                          help="same as --knee-already-relaxed, for the stand-only head-height "
                               "reward scaffold (only meaningful with --stand-only)")
+    parser.add_argument("--height-start-scale", type=float, default=6.0,
+                         help="HeightRewardScaffoldCallback start value -- override when "
+                              "continuing a run that's already past the original 6.0 baseline")
+    parser.add_argument("--height-end-scale", type=float, default=10.0,
+                         help="HeightRewardScaffoldCallback target value")
+    parser.add_argument("--height-relax-frac", type=float, default=0.6,
+                         help="HeightRewardScaffoldCallback ramp fraction of --timesteps")
     args = parser.parse_args()
 
     MODELS_DIR.mkdir(exist_ok=True)
@@ -349,7 +356,10 @@ def main():
         callback_list.append(
             CurriculumGateCallback(args.timesteps, already_relaxed=args.calm_already_relaxed))
         callback_list.append(
-            HeightRewardScaffoldCallback(args.timesteps, already_relaxed=args.height_already_relaxed))
+            HeightRewardScaffoldCallback(args.timesteps, start_scale=args.height_start_scale,
+                                          end_scale=args.height_end_scale,
+                                          relax_frac=args.height_relax_frac,
+                                          already_relaxed=args.height_already_relaxed))
     callbacks = CallbackList(callback_list)
 
     try:
