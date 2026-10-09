@@ -22,10 +22,25 @@ RESET_EVERY_SECONDS = 20.0     # matches env.py's MAX_STEPS=1000 (*0.02s/step) -
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoint", type=str)
+    # bug found 2026-10-09: this was never wired up at all, so every stand-only checkpoint
+    # watched here all night was actually running with stand_only=False -- BALANCE_KP/KD (the
+    # torso-pitch assist that's supposed to be off) and the horizontal thrust actuator (whose
+    # action dim training always zeroed, so its real output here is untrained noise) were both
+    # silently active, making everything on screen easier than what was actually trained/gated.
+    # Defaults to True since every checkpoint in active use right now is stand-only; pass
+    # --no-stand-only for an older walking-mode checkpoint (e.g. docs section 10's v12fresh2).
+    parser.add_argument("--no-stand-only", dest="stand_only", action="store_false", default=True,
+                         help="watch a non-stand-only (walking-mode) checkpoint instead")
+    parser.add_argument("--knee-floor-deg", type=float, default=-80.0,
+                         help="match the knee-angle scaffold's permanent floor during calm "
+                              "episodes (set to None-equivalent via a very negative number, "
+                              "e.g. -140, to disable)")
     args = parser.parse_args()
 
     model = PPO.load(args.checkpoint, device="cpu")
-    env = LocomotionEnv()
+    env = LocomotionEnv(stand_only=args.stand_only)
+    if args.stand_only:
+        env.set_min_knee_deg(args.knee_floor_deg)
     obs, info = env.reset()
     last_reset = time.time()
 
