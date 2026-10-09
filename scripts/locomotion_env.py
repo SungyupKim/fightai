@@ -211,7 +211,15 @@ class LocomotionEnv(Fighter2DEnv):
             # going into tonight's stand-only work was 6.0 all along, not env.py's bare default
             # of 3.0. Caught by actually printing the value before vs. after this assignment
             # instead of trusting the comment above it.
-            env_module.HEAD_HEIGHT_REWARD_SCALE = 10.0
+            #
+            # Made this a scaffold (HeightRewardScaffoldCallback, train_locomotion.py) instead
+            # of a one-off constant edit -- the whole point of tonight's "is it stuck at a low
+            # equilibrium" diagnosis was that it only shows up well into training, and finding
+            # it required manually stopping, editing a constant, and restarting/warm-starting
+            # every time. The scaffold anneals this automatically (6.0 -> HEIGHT_SCALE_TARGET)
+            # on every future run without needing another manual round-trip, and (like the
+            # other scaffolds) resumes correctly across an --init-from continuation instead of
+            # restarting its own ramp from scratch.
         super().__init__(render_mode=render_mode, opponent_policy_path=None, getup_curriculum_prob=0.0)
         self._b_root_x_qpos = self.model.joint("b_root_x").qposadr[0]
         self._b_root_x_dof = self.model.joint("b_root_x").dofadr[0]
@@ -284,6 +292,14 @@ class LocomotionEnv(Fighter2DEnv):
         calm (near-standing) vs. harsh (random collapse). Same env_method broadcast pattern as
         set_min_knee_deg/set_assist_scale."""
         self._calm_frac = frac
+
+    def set_height_reward_scale(self, scale):
+        """Called externally (HeightRewardScaffoldCallback) to anneal env.py's module-global
+        head-height reward scale. Mutates the module global directly (there's no per-instance
+        copy of it -- env.py's reward calc reads the bare name each step), same as this
+        class's __init__ does for BALANCE_KP/STABILITY_REWARD_SCALE, just now adjustable
+        mid-run instead of fixed once at construction."""
+        env_module.HEAD_HEIGHT_REWARD_SCALE = scale
 
     def _obs(self):
         com_x = np.sum(self._a_masses * self.data.xipos[self._a_bodies, 0]) / self._a_masses.sum()

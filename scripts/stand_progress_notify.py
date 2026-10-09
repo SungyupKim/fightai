@@ -32,6 +32,7 @@ GATE_WIN = 150  # 3 seconds at 0.02s/step
 FIELDS = {
     "total_timesteps": "누적 스텝",
     "calm_frac": "커리큘럼(calm 시작 비율)",
+    "height_reward_scale": "높이 보상 스케일(스캐폴드, 6.0->10.0)",
     "fall_rate": "낙상률(학습 로그, 참고용)",
     "ep_len_mean": "평균 버틴 스텝(학습 로그, 참고용)",
     "r_com": "무게중심 보상(참고용)",
@@ -137,12 +138,18 @@ def format_message(v, total, gate_rate, gate_ckpt, calm_gate_rate):
     else:
         stage_line = f"커리큘럼: 2단계 - 전체 분포 (calm {calm_frac:.0%}, 쓰러진 자세 포함)"
 
+    height_scale = v.get("height_reward_scale")
+    height_line = (f"{FIELDS['height_reward_scale']}: {height_scale:.1f}"
+                   if height_scale is not None else None)
+
     lines = [
         "[fightai] 서기 학습 경과",
         f"{FIELDS['total_timesteps']}: {steps/1e6:.1f}M / {total/1e6:.0f}M ({pct:.0f}%)",
     ]
     if stage_line:
         lines.append(stage_line)
+    if height_line:
+        lines.append(height_line)
     lines.append("")
     if gate_rate is None:
         lines.append("실제 3초 생존율: 아직 체크포인트 없음")

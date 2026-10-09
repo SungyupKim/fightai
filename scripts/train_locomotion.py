@@ -179,6 +179,31 @@ class VelocityAssistCallback(LinearScaffoldCallback):
         self.training_env.env_method("set_assist_scale", value)
 
 
+class HeightRewardScaffoldCallback(LinearScaffoldCallback):
+    """Anneals the stand-only head-height reward scale from `start_scale` (6.0 -- the ambient
+    baseline every LocomotionEnv gets from a module-level override left by an earlier
+    locomotion-mode experiment, docs 10.33-10.35, NOT env.py's bare 3.0 default) up to
+    `end_scale`, instead of a one-off manual constant edit.
+
+    Measured directly (2026-10-09, qfrc_bias at a hand-set upright pose) that holding full leg
+    extension against gravity costs only ~1-5% of each joint's max torque -- not a capability
+    problem. Yet checkpoints kept settling into a stable but LOW equilibrium (torso_z
+    0.10-0.63, std~0 -- genuinely stable, not falling) even with a dedicated knee-straightness
+    reward added. The fix (raising this scale so "stand tall" clearly beats "sit low and
+    stable" in the policy's own value estimate) only showed its need well into a training run,
+    and required manually stopping, editing a constant, and warm-starting every time it came
+    up. Baked in as a scaffold instead so every future run gets it automatically and (like the
+    other scaffolds) resumes its own ramp correctly across an --init-from continuation."""
+
+    log_key = "rollout/height_reward_scale"
+
+    def __init__(self, total_timesteps, start_scale=6.0, end_scale=10.0, **kwargs):
+        super().__init__(total_timesteps, start_scale, end_scale, **kwargs)
+
+    def apply(self, value):
+        self.training_env.env_method("set_height_reward_scale", value)
+
+
 class CurriculumGateCallback(LinearScaffoldCallback):
     """Advances LocomotionEnv's calm/harsh episode-start curriculum (docs 2026-10-09) from
     phase 1 (100% calm -- just learn to hold a stand) to phase 2 (the original combat-tuned
@@ -286,6 +311,9 @@ def main():
     parser.add_argument("--calm-already-relaxed", action="store_true",
                          help="same as --knee-already-relaxed, for the stand-only calm-episode-"
                               "fraction curriculum (only meaningful with --stand-only)")
+    parser.add_argument("--height-already-relaxed", action="store_true",
+                         help="same as --knee-already-relaxed, for the stand-only head-height "
+                              "reward scaffold (only meaningful with --stand-only)")
     args = parser.parse_args()
 
     MODELS_DIR.mkdir(exist_ok=True)
@@ -320,6 +348,8 @@ def main():
     if args.stand_only:
         callback_list.append(
             CurriculumGateCallback(args.timesteps, already_relaxed=args.calm_already_relaxed))
+        callback_list.append(
+            HeightRewardScaffoldCallback(args.timesteps, already_relaxed=args.height_already_relaxed))
     callbacks = CallbackList(callback_list)
 
     try:
