@@ -195,6 +195,23 @@ class LocomotionEnv(Fighter2DEnv):
             # stand-only's height/stand_streak (both scale 3.0) -- too weak to meaningfully
             # discourage the "tap-dancing" vertical bobbing seen in stand-only training (2026-10-08).
             env_module.STABILITY_REWARD_SCALE = 1.0
+            # Raised again, 6.0->10.0 (2026-10-09): directly measured (qfrc_bias at a hand-set
+            # upright pose) that holding full leg extension against gravity needs only ~1-5% of
+            # each joint's max torque -- extending is nowhere near physically costly. Yet v19
+            # checkpoints kept settling into a stable but LOW equilibrium (torso_z 0.10-0.63,
+            # std~0 -- genuinely stable, not falling) even with the knee_straight term added.
+            # Not a capability problem, a preference one: the current reward magnitude isn't
+            # making "stand tall" clearly better than "sit low and stable" in the policy's own
+            # value estimate. This raises the stakes on being tall specifically.
+            #
+            # NOTE: almost set this to 5.0, which would have been a REGRESSION -- the module-
+            # level override a few lines up (env_module.HEAD_HEIGHT_REWARD_SCALE = 6.0, from an
+            # earlier locomotion-mode experiment, docs 10.33-10.35) already runs at import time
+            # for every LocomotionEnv regardless of stand_only, so the true ambient baseline
+            # going into tonight's stand-only work was 6.0 all along, not env.py's bare default
+            # of 3.0. Caught by actually printing the value before vs. after this assignment
+            # instead of trusting the comment above it.
+            env_module.HEAD_HEIGHT_REWARD_SCALE = 10.0
         super().__init__(render_mode=render_mode, opponent_policy_path=None, getup_curriculum_prob=0.0)
         self._b_root_x_qpos = self.model.joint("b_root_x").qposadr[0]
         self._b_root_x_dof = self.model.joint("b_root_x").dofadr[0]
