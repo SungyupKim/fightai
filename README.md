@@ -25,33 +25,11 @@ The stand-only effort went through roughly twenty iterations before the fixed-se
 survival gate moved off a flat **0%** — not because any single fix was wrong, but because getting
 a biped to balance from scratch via RL is a genuinely hard control problem, and most of the
 apparent progress along the way was training-log metrics that looked good while the real target
-stayed at zero (see §2–3 below). The latest checkpoint clears the bar on **~1%** of fixed-seed
+stayed at zero. The latest checkpoint clears the bar on **~1%** of fixed-seed
 trials, deterministic policy, no cherry-picking — the first confirmed non-zero result in this
 track. Physical capability was never the blocker: a direct torque measurement shows holding a
 full standing posture costs only 1–5% of each joint's maximum output. The rest is reward and
 curriculum design, which is still being actively tightened.
-
-## Lessons (the short version)
-
-- **Training-log numbers are not ground truth.** `fall_rate`, `ep_len_mean`, rolling-window means
-  — all of them can improve steadily while the thing you actually care about is flat. Every
-  reported result here comes from a fixed-seed, deterministic re-measurement, not a log line.
-- **A reward term designed for one mode doesn't turn itself off in another.** Two separate bugs
-  (a leg-spreading reward, a "getting up" reward) kept paying out during stand-only training
-  because they were built for combat and nobody gated them off for the new mode — same shape of
-  mistake, twice.
-- **Reward the thing the evaluation actually measures.** `fall_rate` improving while a fixed-seed
-  "stay balanced for 3 continuous seconds" gate stays at 0% is the single most repeated pattern in
-  this project's history. The fix each time was making the reward pay for exactly the eval
-  criterion, not a proxy for it.
-- **Separate "can't" from "hasn't learned."** Hand-coded controllers (no RL) and direct inverse-
-  dynamics torque checks were used repeatedly to pin down whether a limitation was physical
-  (actuator strength, body proportions) or a training/reward-shaping problem — they're very
-  different fixes.
-- **Pure reward-constant changes warm-start; structural changes don't.** Changing a reward
-  coefficient doesn't require retraining from scratch — continuing from a checkpoint
-  (`--init-from`) preserves tens of millions of steps of learned skill. Body/XML changes and
-  observation-space changes do need a fresh run.
 
 ## Setup
 
