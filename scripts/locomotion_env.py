@@ -140,6 +140,17 @@ GAIT_REF = 2.0                 # raw -(hip_r_vel*hip_l_vel) at which the saturat
 BRACE_REWARD_SCALE = 1.0
 BRACE_VZ_REF = 1.0             # m/s downward torso speed at which the fall gate saturates
 
+# ---- knee straightness, ungated (stand-only, 2026-10-09) ----
+# brace above only pays for straightening the knees WHILE actively falling fast -- measured on
+# a v17 checkpoint (phase 1, calm-only curriculum) that it had instead found a stable LOW
+# equilibrium (torso_z ~0.25-0.36m, well under FALL_HEIGHT=0.70) by keeping both knees pinned
+# near their -140deg flexion limit with near-zero velocity -- brace's fall_gate is ~0 there
+# (it's not falling, it's just staying down), so nothing was pushing it to straighten back up.
+# This term pays for knee straightness directly, regardless of velocity or current height, so
+# that equilibrium stops being free -- reuses the same knee_straight ratio brace already
+# computes, just without the fall_gate multiplier.
+KNEE_STRAIGHT_SCALE = 1.0
+
 # ---- centre-of-mass over support (stand-only, docs 10.5x) ----
 # Reward for keeping the whole body's centre of mass horizontally over the feet (bounded, cliff-free).
 # Only the horizontal position counts, so it doesn't reward crouching the way a height term would.
@@ -422,6 +433,7 @@ class LocomotionEnv(Fighter2DEnv):
         knee_mean = 0.5 * (self.data.qpos[self._knee_r_qpos] + self.data.qpos[self._knee_l_qpos])
         knee_straight = min(1.0, max(0.0, (knee_mean + np.deg2rad(140.0)) / np.deg2rad(140.0)))
         brace_reward = BRACE_REWARD_SCALE * fall_gate * knee_straight
+        knee_straight_reward = KNEE_STRAIGHT_SCALE * knee_straight if self._stand_only else 0.0
         com_reward = 0.0
         if self._stand_only:
             com_x = np.sum(self._a_masses * self.data.xipos[self._a_bodies, 0]) / self._a_masses.sum()
@@ -438,12 +450,14 @@ class LocomotionEnv(Fighter2DEnv):
             stand_streak_reward = STAND_STREAK_SCALE * min(1.0, self._stand_streak / STAND_STREAK_REF)
             info["stand_streak_steps"] = self._stand_streak  # raw step count, uncapped -- for
                                                               # curriculum gating (CurriculumGateCallback)
-        reward = reward + velocity_reward + gait_reward + brace_reward + com_reward + stand_streak_reward
+        reward = (reward + velocity_reward + gait_reward + brace_reward + com_reward
+                  + stand_streak_reward + knee_straight_reward)
         info["reward_breakdown"]["velocity"] = velocity_reward
         info["reward_breakdown"]["gait"] = gait_reward
         info["reward_breakdown"]["brace"] = brace_reward
         info["reward_breakdown"]["com"] = com_reward
         info["reward_breakdown"]["stand_streak"] = stand_streak_reward
+        info["reward_breakdown"]["knee_straight"] = knee_straight_reward
         info["target_vx"] = self._target_vx
 
         if RESAMPLE_EVERY_STEPS is not None and self.step_count % RESAMPLE_EVERY_STEPS == 0:
