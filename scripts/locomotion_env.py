@@ -168,6 +168,24 @@ BRACE_VZ_REF = 1.0             # m/s downward torso speed at which the fall gate
 # matching it to height/stand_streak's scale instead.
 KNEE_STRAIGHT_SCALE = 3.0
 
+# ---- torso upright, ungated (stand-only, 2026-10-09) ----
+# root_ry (torso pitch) has no RL-controlled actuator of its own -- in combat it's held by an
+# always-on external PD (env.py BALANCE_KP/KD), which stand_only turns off entirely (docs
+# 10.5x: it's not a force a real body has). A real human doesn't have one either, though --
+# torso orientation is controlled indirectly, via hip/ankle/knee torque creating the right
+# ground-reaction-force moment, the same joints already in this action space (plus `waist`).
+# So the actuation to do this exists; watching a trained checkpoint directly (stand_only=True,
+# matching knee floor, no viewer bug) showed the torso tumbling/rotating with no resistance --
+# consistent with the policy not yet having learned that indirect control, not a missing
+# actuator. A prior reward keyed on |root_ry angular velocity| was tried and dropped in COMBAT
+# (docs: falls there were vertical-collapse-dominated, so it was "measuring the wrong axis") --
+# but that was with the balance assist likely still active and a different failure mode; here,
+# with no assist and rotation itself visibly the problem, the same axis is probably the right
+# one to reward now. Angle-based (not velocity) for the first pass, same cliff-free squared-
+# ratio shape as height/stability.
+TORSO_UPRIGHT_SCALE = 2.0
+TORSO_ANGLE_REF = 0.5          # rad (~29deg) -- ratio saturates to 0 beyond this tilt
+
 # ---- centre-of-mass over support (stand-only, docs 10.5x) ----
 # Reward for keeping the whole body's centre of mass horizontally over the feet (bounded, cliff-free).
 # Only the horizontal position counts, so it doesn't reward crouching the way a height term would.
@@ -494,6 +512,11 @@ class LocomotionEnv(Fighter2DEnv):
         knee_min = min(self.data.qpos[self._knee_r_qpos], self.data.qpos[self._knee_l_qpos])
         knee_straight_min = min(1.0, max(0.0, (knee_min + np.deg2rad(140.0)) / np.deg2rad(140.0)))
         knee_straight_reward = KNEE_STRAIGHT_SCALE * knee_straight_min if self._stand_only else 0.0
+        torso_upright_reward = 0.0
+        if self._stand_only:
+            a_ry = self.data.qpos[self.a_ry_qpos]
+            upright_ratio = min(1.0, max(0.0, 1.0 - abs(a_ry) / TORSO_ANGLE_REF))
+            torso_upright_reward = TORSO_UPRIGHT_SCALE * upright_ratio ** 2
         com_reward = 0.0
         if self._stand_only:
             com_x = np.sum(self._a_masses * self.data.xipos[self._a_bodies, 0]) / self._a_masses.sum()
@@ -511,13 +534,14 @@ class LocomotionEnv(Fighter2DEnv):
             info["stand_streak_steps"] = self._stand_streak  # raw step count, uncapped -- for
                                                               # curriculum gating (CurriculumGateCallback)
         reward = (reward + velocity_reward + gait_reward + brace_reward + com_reward
-                  + stand_streak_reward + knee_straight_reward)
+                  + stand_streak_reward + knee_straight_reward + torso_upright_reward)
         info["reward_breakdown"]["velocity"] = velocity_reward
         info["reward_breakdown"]["gait"] = gait_reward
         info["reward_breakdown"]["brace"] = brace_reward
         info["reward_breakdown"]["com"] = com_reward
         info["reward_breakdown"]["stand_streak"] = stand_streak_reward
         info["reward_breakdown"]["knee_straight"] = knee_straight_reward
+        info["reward_breakdown"]["torso_upright"] = torso_upright_reward
         info["target_vx"] = self._target_vx
 
         if RESAMPLE_EVERY_STEPS is not None and self.step_count % RESAMPLE_EVERY_STEPS == 0:
