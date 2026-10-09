@@ -37,6 +37,7 @@ FIELDS = {
     "r_com": "무게중심 보상(참고용)",
     "r_brace": "다리 펴기 보상(참고용)",
     "r_stand_streak": "연속 서기 보상(참고용)",
+    "r_knee_straight": "무릎 펴기 보상(참고용)",
     "max_stand_streak_steps": "최대 연속 유지 스텝(2단계 전환 기준: 500)",
     "std": "행동 흔들림(std)",
 }
@@ -156,6 +157,7 @@ def format_message(v, total, gate_rate, gate_ckpt, calm_gate_rate):
     lines.append(f"{FIELDS['r_com']}: {v.get('r_com', float('nan')):.1f}")
     lines.append(f"{FIELDS['r_brace']}: {v.get('r_brace', float('nan')):.1f}")
     lines.append(f"{FIELDS['r_stand_streak']}: {v.get('r_stand_streak', float('nan')):.1f}")
+    lines.append(f"{FIELDS['r_knee_straight']}: {v.get('r_knee_straight', float('nan')):.1f}")
     lines.append(f"{FIELDS['max_stand_streak_steps']}: {v.get('max_stand_streak_steps', float('nan')):.0f}")
     lines.append(f"{FIELDS['std']}: {v.get('std', float('nan')):.3f}")
     return "\n".join(lines)
