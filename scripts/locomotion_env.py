@@ -153,11 +153,20 @@ BRACE_VZ_REF = 1.0             # m/s downward torso speed at which the fall gate
 # TODO (flagged 2026-10-09, before building the walking curriculum): this is a stand-only-
 # phase-0 scaffold, not a permanent preference -- real walking needs the knee to cycle through
 # flexion every step, and an always-on reward for straightness would fight that normal gait
-# motion once velocity/gait rewards come back. Scale is modest (1.0, vs height/stand_streak's
-# 3.0) so it shouldn't cripple a brief bend during 0-b's recovery-from-collapse either, but it
-# should be annealed down toward 0 (same LinearScaffoldCallback machinery as the knee floor /
-# velocity assist) specifically before reward weights are set up for walking -- don't forget.
-KNEE_STRAIGHT_SCALE = 1.0
+# motion once velocity/gait rewards come back. It should be annealed down toward 0 (same
+# LinearScaffoldCallback machinery as the knee floor / velocity assist) specifically before
+# reward weights are set up for walking -- don't forget.
+#
+# Raised 1.0->3.0 (2026-10-09): doubling-then-some the height reward (6.0->10.0->~13 so far,
+# still ramping toward 15) had ZERO measurable effect on knee angle -- direct measurement on
+# several checkpoints along that ramp still showed both knees pinned at -140/-141deg every
+# time, even as max_stand_streak_steps started climbing (from something other than leg
+# extension, apparently). Reading: height reward doesn't reach the knee-bend habit at all, most
+# likely because the policy isn't exploring leg extension in the first place, so a bigger prize
+# at a destination it never visits doesn't help. knee_straight directly rewards the mechanism
+# itself rather than the end state, and had never been raised since its original value --
+# matching it to height/stand_streak's scale instead.
+KNEE_STRAIGHT_SCALE = 3.0
 
 # ---- centre-of-mass over support (stand-only, docs 10.5x) ----
 # Reward for keeping the whole body's centre of mass horizontally over the feet (bounded, cliff-free).
