@@ -441,7 +441,17 @@ class LocomotionEnv(Fighter2DEnv):
         knee_mean = 0.5 * (self.data.qpos[self._knee_r_qpos] + self.data.qpos[self._knee_l_qpos])
         knee_straight = min(1.0, max(0.0, (knee_mean + np.deg2rad(140.0)) / np.deg2rad(140.0)))
         brace_reward = BRACE_REWARD_SCALE * fall_gate * knee_straight
-        knee_straight_reward = KNEE_STRAIGHT_SCALE * knee_straight if self._stand_only else 0.0
+        # knee_straight above uses the MEAN of both knees -- fine for brace (a same-instant
+        # reflex where partial credit for a half-hearted brace is reasonable), but measured on
+        # a real checkpoint that the ungated version below was being satisfied by straightening
+        # ONE knee to ~0deg while leaving the other pinned at -140 (mean looks like "both knees
+        # half-bent", same score, torso stays just as low). knee_avoid right above already hit
+        # this exact masking problem once and fixed it by using MIN instead of the average --
+        # same fix here, since the whole point is both legs need to extend to actually raise
+        # the torso.
+        knee_min = min(self.data.qpos[self._knee_r_qpos], self.data.qpos[self._knee_l_qpos])
+        knee_straight_min = min(1.0, max(0.0, (knee_min + np.deg2rad(140.0)) / np.deg2rad(140.0)))
+        knee_straight_reward = KNEE_STRAIGHT_SCALE * knee_straight_min if self._stand_only else 0.0
         com_reward = 0.0
         if self._stand_only:
             com_x = np.sum(self._a_masses * self.data.xipos[self._a_bodies, 0]) / self._a_masses.sum()
